@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cell Scope — patient tracking</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">CELL SCOPE <span>/ malaria triage</span></div>
+    <nav class="tabs">
+      <a href="/">Single cell</a>
+      <a href="/smear">Full smear</a>
+      <a href="/track" class="active">Patient tracking</a>
+    </nav>
+  </header>
+
+  <h1>Track parasitemia over time.</h1>
+  <p class="lede">
+    Each visit is a batch of cell photos analyzed together into one parasitemia
+    estimate. Add visits across a treatment course to see whether it's working.
+  </p>
+
+  <div class="track-layout">
+    <div>
+      <div class="new-patient-row">
+        <input type="text" id="new-patient-name" placeholder="New patient name">
+        <button id="add-patient-btn">Add</button>
+      </div>
+      <div class="patient-list" id="patient-list">
+        <div class="empty-state" style="font-size:13px; padding:8px 0;">No patients yet.</div>
+      </div>
+    </div>
+
+    <div id="detail-panel">
+      <div class="empty-state">Select or add a patient to get started.</div>
+    </div>
+  </div>
+
+</div>
+
+<template id="detail-template">
+  <div class="panel" id="trend-panel">
+    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+      <h2 id="patient-name">—</h2>
+      <button class="ghost" id="download-report-btn" style="font-size:12px; padding:6px 12px;">Download PDF report</button>
+    </div>
+    <div class="trend-banner" id="trend-banner">—</div>
+    <canvas id="trend-chart" height="90"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Add a visit</h2>
+    <div class="field-row">
+      <div class="field">
+        <label>Visit date</label>
+        <input type="date" id="visit-date">
+      </div>
+    </div>
+    <label class="file-drop" for="visit-images">
+      <div id="file-drop-text">Click to select cell photos for this visit (multiple files OK)</div>
+      <div class="file-count" id="file-count"></div>
+    </label>
+    <input type="file" id="visit-images" accept="image/*" multiple style="display:none;">
+    <div style="margin-top:14px;">
+      <button id="submit-visit-btn" disabled>Analyze visit</button>
+    </div>
+    <div class="error" id="visit-error" style="margin-top:14px;"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Visit history</h2>
+    <table class="visit-table" id="visit-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Cells analyzed</th>
+          <th>Parasitemia</th>
+          <th>95% CI</th>
+          <th>Tier</th>
+        </tr>
+      </thead>
+      <tbody id="visit-table-body"></tbody>
+    </table>
+    <div class="empty-state" id="no-visits" style="display:none;">No visits recorded yet.</div>
+    <div class="disclaimer" style="margin-top:16px;">
+      Severity tiers here are simplified thresholds for demo purposes, not a
+      validated clinical standard. Parasitemia estimates come from a research
+      prototype classifier and should not guide real treatment decisions.
+    </div>
+  </div>
+</template>
+
+<script>
+  let patients = [];
+  let activePatientId = null;
+  let chart = null;
+
+  async function loadPatients() {
+    const res = await fetch('/api/patients');
+    patients = await res.json();
+    renderPatientList();
+  }
+
+  function renderPatientList() {
+    const list = document.getElementById('patient-list');
+    if (patients.length === 0) {
+      list.innerHTML = '<div class="empty-state" style="font-size:13px; padding:8px 0;">No patients yet.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    patients.forEach(p => {
+      const btn = document.createElement('button');
+      btn.className = 'patient-item' + (p.id === activePatientId ? ' active' : '');
+      btn.textContent = p.name;
+      btn.addEventListener('click', () => selectPatient(p.id));
+      list.appendChild(btn);
+    });
+  }
+
+  document.getElementById('add-patient-btn').addEventListener('click', async () => {
+    const input = document.getElementById('new-patient-name');
+    const name = input.value.trim();
+    if (!name) return;
+    const res = await fetch('/api/patients', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (res.ok) {
+      const patient = await res.json();
+      input.value = '';
+      await loadPatients();
+      selectPatient(patient.id);
+    }
+  });
+
+  async function selectPatient(id) {
+    activePatientId = id;
+    renderPatientList();
+    await renderDetail();
+  }
+
+  async function renderDetail() {
+    const panel = document.getElementById('detail-panel');
+    const template = document.getElementById('detail-template');
+    panel.innerHTML = '';
+    panel.appendChild(template.content.cloneNode(true));
+
+    const res = await fetch(`/api/patients/${activePatientId}/visits`);
+    const data = await res.json();
+
+    document.getElementById('patient-name').textContent = data.patient.name;
+
+    const banner = document.getElementById('trend-banner');
+    banner.textContent = data.trend;
+    banner.className = 'trend-banner';
+    if (data.trend.includes('decreased') || data.trend.includes('No parasites detected')) banner.classList.add('improving');
+    if (data.trend.includes('increased')) banner.classList.add('worsening');
+
+    document.getElementById('download-report-btn').onclick = () => {
+      window.location.href = `/api/patients/${activePatientId}/report`;
+    };
+
+    renderChart(data.visits);
+    renderVisitTable(data.visits);
+
+    // wire up the "add visit" controls for this patient
+    const fileInput = document.getElementById('visit-images');
+    const fileCountEl = document.getElementById('file-count');
+    const submitBtn = document.getElementById('submit-visit-btn');
+    const dateInput = document.getElementById('visit-date');
+    const errorBox = document.getElementById('visit-error');
+    dateInput.valueAsDate = new Date();
+
+    fileInput.addEventListener('change', () => {
+      const n = fileInput.files.length;
+      fileCountEl.textContent = n ? `${n} image${n > 1 ? 's' : ''} selected` : '';
+      submitBtn.disabled = n === 0;
+    });
+
+    submitBtn.addEventListener('click', async () => {
+      errorBox.classList.remove('show');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Analyzing…';
+
+      const formData = new FormData();
+      formData.append('visit_date', dateInput.value);
+      Array.from(fileInput.files).forEach(f => formData.append('images', f));
+
+      try {
+        const res = await fetch(`/api/patients/${activePatientId}/visits`, {
+          method: 'POST',
+          body: formData,
+        });
+        const result = await res.json();
+        if (!res.ok) {
+          errorBox.textContent = result.error || 'Something went wrong.';
+          errorBox.classList.add('show');
+          return;
+        }
+        await renderDetail(); // refresh chart + table with the new visit
+      } catch (e) {
+        errorBox.textContent = 'Could not reach the server.';
+        errorBox.classList.add('show');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Analyze visit';
+      }
+    });
+  }
+
+  function renderChart(visits) {
+    const ctx = document.getElementById('trend-chart');
+    if (chart) chart.destroy();
+    if (visits.length === 0) {
+      ctx.getContext('2d').clearRect(0, 0, ctx.width, ctx.height);
+      return;
+    }
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: visits.map(v => v.visit_date),
+        datasets: [{
+          label: 'Parasitemia %',
+          data: visits.map(v => v.parasitemia_pct),
+          borderColor: '#1F6F6B',
+          backgroundColor: 'rgba(31,111,107,0.08)',
+          fill: true,
+          tension: 0.25,
+          pointRadius: 4,
+          pointBackgroundColor: '#1F6F6B',
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, title: { display: true, text: 'Parasitemia %' } }
+        }
+      }
+    });
+  }
+
+  function renderVisitTable(visits) {
+    const body = document.getElementById('visit-table-body');
+    const empty = document.getElementById('no-visits');
+    body.innerHTML = '';
+    if (visits.length === 0) {
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+    visits.slice().reverse().forEach(v => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${v.visit_date}</td>
+        <td>${v.cells_analyzed} (${v.cells_parasitized} flagged)</td>
+        <td>${v.parasitemia_pct}%</td>
+        <td>${v.ci_low}–${v.ci_high}%</td>
+        <td><span class="tier-badge">${v.tier}</span></td>
+      `;
+      body.appendChild(tr);
+    });
+  }
+
+  loadPatients();
+</script>
+</body>
+</html>

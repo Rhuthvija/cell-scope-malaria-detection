@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cell Scope — malaria screening</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">CELL SCOPE <span>/ malaria triage</span></div>
+    <nav class="tabs">
+      <a href="/" class="active">Single cell</a>
+      <a href="/smear">Full smear</a>
+      <a href="/track">Patient tracking</a>
+    </nav>
+  </header>
+
+  <h1>Upload a cell photo.<br>See what the model sees.</h1>
+  <p class="lede">
+    Drop in a thin-smear microscope photo of a single red blood cell and this
+    tool will flag whether <em>Plasmodium</em> parasites appear present —
+    trained on the NIH/NLM malaria dataset of 27,558 labeled cells.
+  </p>
+
+  <div class="scope-area">
+    <label class="scope" id="scope" for="file-input">
+      <div class="crosshair"></div>
+      <div class="placeholder" id="placeholder">
+        <strong>Drop a cell image here</strong>
+        or click to browse
+      </div>
+      <img id="preview" style="display:none;">
+    </label>
+    <input type="file" id="file-input" accept="image/*">
+    <div class="scale-bar">100× field · click to load a slide</div>
+
+    <div class="actions">
+      <button id="analyze-btn" disabled>Analyze cell</button>
+      <button class="ghost" id="reset-btn" style="display:none;">Try another</button>
+    </div>
+  </div>
+
+  <div class="error" id="error-box"></div>
+  <div class="error" id="quality-box" style="background:#FFF7E6; border-color:#D9A441; color:#8A6116;"></div>
+
+  <div class="result" id="result">
+    <div class="result-head">
+      <div class="verdict" id="verdict-text">—</div>
+      <div class="pill" id="verdict-pill">—</div>
+    </div>
+
+    <img id="heatmap-img" style="display:none; width:100%; max-width:300px; border-radius:8px; border:1px solid var(--line); margin-bottom:16px;">
+    <div class="scale-bar" id="heatmap-caption" style="display:none; margin-bottom:16px;">Grad-CAM: warmer areas drove the model's prediction most</div>
+
+    <div class="bars">
+      <div class="bar-row">
+        <div class="bar-label">Parasitized</div>
+        <div class="bar-track"><div class="bar-fill parasitized" id="bar-parasitized" style="width:0%"></div></div>
+        <div class="bar-value" id="val-parasitized">0%</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Uninfected</div>
+        <div class="bar-track"><div class="bar-fill uninfected" id="bar-uninfected" style="width:0%"></div></div>
+        <div class="bar-value" id="val-uninfected">0%</div>
+      </div>
+    </div>
+    <div class="disclaimer">
+      This is a hackathon prototype, not a diagnostic device. Model output is a
+      probability estimate on a single cropped cell image and has not been
+      clinically validated — a confirmed malaria diagnosis should always come
+      from a trained microscopist or an approved rapid diagnostic test.
+    </div>
+  </div>
+
+  <footer>NIH / NLM malaria cell dataset · ResNet/MobileNet-style transfer learning · built for &lt;hackathon name&gt;</footer>
+
+</div>
+
+<script>
+  const scope = document.getElementById('scope');
+  const fileInput = document.getElementById('file-input');
+  const placeholder = document.getElementById('placeholder');
+  const preview = document.getElementById('preview');
+  const analyzeBtn = document.getElementById('analyze-btn');
+  const resetBtn = document.getElementById('reset-btn');
+  const result = document.getElementById('result');
+  const errorBox = document.getElementById('error-box');
+  const qualityBox = document.getElementById('quality-box');
+
+  let currentFile = null;
+
+  function loadFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    currentFile = file;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      preview.src = e.target.result;
+      preview.style.display = 'block';
+      placeholder.style.display = 'none';
+      scope.classList.add('has-image');
+      analyzeBtn.disabled = false;
+      resetBtn.style.display = 'inline-block';
+      result.classList.remove('show');
+      errorBox.classList.remove('show');
+      qualityBox.classList.remove('show');
+    };
+    reader.readAsDataURL(file);
+  }
+
+  fileInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+  ['dragover', 'dragenter'].forEach(evt =>
+    scope.addEventListener(evt, (e) => { e.preventDefault(); scope.classList.add('dragover'); })
+  );
+  ['dragleave', 'drop'].forEach(evt =>
+    scope.addEventListener(evt, (e) => { e.preventDefault(); scope.classList.remove('dragover'); })
+  );
+  scope.addEventListener('drop', (e) => {
+    if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+  });
+
+  resetBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    currentFile = null;
+    fileInput.value = '';
+    preview.style.display = 'none';
+    placeholder.style.display = 'block';
+    scope.classList.remove('has-image');
+    analyzeBtn.disabled = true;
+    resetBtn.style.display = 'none';
+    result.classList.remove('show');
+    errorBox.classList.remove('show');
+    qualityBox.classList.remove('show');
+  });
+
+  analyzeBtn.addEventListener('click', async () => {
+    if (!currentFile) return;
+    analyzeBtn.disabled = true;
+    analyzeBtn.textContent = 'Analyzing…';
+    errorBox.classList.remove('show');
+    qualityBox.classList.remove('show');
+
+    const formData = new FormData();
+    formData.append('image', currentFile);
+
+    try {
+      const res = await fetch('/predict', { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (!res.ok) {
+        errorBox.textContent = data.error || 'Something went wrong.';
+        errorBox.classList.add('show');
+        result.classList.remove('show');
+        return;
+      }
+
+      if (data.quality && !data.quality.ok) {
+        qualityBox.textContent = '⚠ ' + data.quality.issues.join(' ');
+        qualityBox.classList.add('show');
+      }
+
+      const isUncertain = data.uncertain;
+      const isParasitized = data.label === 'Parasitized';
+
+      const verdictEl = document.getElementById('verdict-text');
+      const pill = document.getElementById('verdict-pill');
+
+      if (isUncertain) {
+        verdictEl.textContent = 'Uncertain — recommend manual review';
+        verdictEl.className = 'verdict';
+        verdictEl.style.color = 'var(--ink-soft)';
+        pill.className = 'pill';
+        pill.style.background = 'var(--bg)';
+        pill.style.color = 'var(--ink-soft)';
+      } else {
+        verdictEl.style.color = '';
+        verdictEl.textContent = isParasitized ? 'Parasites likely present' : 'No parasites detected';
+        verdictEl.className = 'verdict ' + (isParasitized ? 'parasitized' : 'uninfected');
+        pill.style.background = '';
+        pill.style.color = '';
+        pill.className = 'pill ' + (isParasitized ? 'parasitized' : 'uninfected');
+      }
+      pill.textContent = data.confidence + '% confidence';
+
+      document.getElementById('bar-parasitized').style.width = data.prob_parasitized + '%';
+      document.getElementById('val-parasitized').textContent = data.prob_parasitized + '%';
+      document.getElementById('bar-uninfected').style.width = data.prob_uninfected + '%';
+      document.getElementById('val-uninfected').textContent = data.prob_uninfected + '%';
+
+      const heatmapImg = document.getElementById('heatmap-img');
+      const heatmapCaption = document.getElementById('heatmap-caption');
+      if (data.heatmap) {
+        heatmapImg.src = data.heatmap;
+        heatmapImg.style.display = 'block';
+        heatmapCaption.style.display = 'block';
+      } else {
+        heatmapImg.style.display = 'none';
+        heatmapCaption.style.display = 'none';
+      }
+
+      result.classList.add('show');
+    } catch (err) {
+      errorBox.textContent = 'Could not reach the server. Is app.py running?';
+      errorBox.classList.add('show');
+    } finally {
+      analyzeBtn.disabled = false;
+      analyzeBtn.textContent = 'Analyze cell';
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cell Scope — full smear analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">CELL SCOPE <span>/ malaria triage</span></div>
+    <nav class="tabs">
+      <a href="/">Single cell</a>
+      <a href="/smear" class="active">Full smear</a>
+      <a href="/track">Patient tracking</a>
+    </nav>
+  </header>
+
+  <h1>Upload a full smear photo.</h1>
+  <p class="lede">
+    No need to pre-crop a cell — drop in a normal field-of-view microscope
+    photo and the model will find every red blood cell, classify each one,
+    and estimate overall parasitemia.
+  </p>
+
+  <div class="panel">
+    <label class="file-drop" for="smear-input" id="smear-drop" style="padding:32px;">
+      <div id="smear-drop-text"><strong>Click or drop a full smear photo here</strong><br>a normal field-of-view photo, not a single cropped cell</div>
+    </label>
+    <input type="file" id="smear-input" accept="image/*" style="display:none;">
+    <div style="margin-top:16px;">
+      <button id="analyze-smear-btn" disabled>Analyze smear</button>
+    </div>
+    <div class="error" id="smear-error" style="margin-top:16px;"></div>
+  </div>
+
+  <div class="panel" id="results-panel" style="display:none;">
+    <h2>Detection results</h2>
+    <img id="annotated-img" style="width:100%; border-radius:8px; border:1px solid var(--line); margin-bottom:18px;">
+
+    <div class="bars" style="margin-bottom:6px;">
+      <div class="bar-row">
+        <div class="bar-label">Detected</div>
+        <div class="bar-value" id="stat-detected" style="width:auto; text-align:left;">—</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Parasitemia</div>
+        <div class="bar-value" id="stat-parasitemia" style="width:auto; text-align:left;">—</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">95% CI</div>
+        <div class="bar-value" id="stat-ci" style="width:auto; text-align:left;">—</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Tier</div>
+        <div class="bar-value" id="stat-tier" style="width:auto; text-align:left;">—</div>
+      </div>
+    </div>
+
+    <div class="disclaimer">
+      Circles are color-coded: coral = classified parasitized, green = classified
+      uninfected, teal = detected but uncertain (excluded from the parasitemia
+      calculation below). Detection uses classical image processing and may
+      merge tightly overlapping cells or miss cells at the image edge — this
+      is a screening estimate, not an exhaustive or clinically validated count.
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const smearInput = document.getElementById('smear-input');
+  const dropText = document.getElementById('smear-drop-text');
+  const analyzeBtn = document.getElementById('analyze-smear-btn');
+  const errorBox = document.getElementById('smear-error');
+  const resultsPanel = document.getElementById('results-panel');
+  let currentFile = null;
+
+  smearInput.addEventListener('change', () => {
+    if (smearInput.files.length) {
+      currentFile = smearInput.files[0];
+      dropText.innerHTML = `<strong>${currentFile.name}</strong><br>ready to analyze`;
+      analyzeBtn.disabled = false;
+    }
+  });
+
+  analyzeBtn.addEventListener('click', async () => {
+    if (!currentFile) return;
+    analyzeBtn.disabled = true;
+    analyzeBtn.textContent = 'Detecting cells…';
+    errorBox.classList.remove('show');
+    resultsPanel.style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('image', currentFile);
+
+    try {
+      const res = await fetch('/api/analyze-smear', { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        errorBox.textContent = data.error || 'Something went wrong.';
+        errorBox.classList.add('show');
+        return;
+      }
+
+      document.getElementById('annotated-img').src = data.annotated_image;
+      document.getElementById('stat-detected').textContent =
+        `${data.cells_detected} cells (${data.cells_confident} confident, ${data.cells_uncertain} uncertain)`;
+      document.getElementById('stat-parasitemia').textContent =
+        `${data.parasitemia_pct}% (${data.cells_parasitized} of ${data.cells_confident} confident cells)`;
+      document.getElementById('stat-ci').textContent = `${data.ci_low}–${data.ci_high}%`;
+      document.getElementById('stat-tier').textContent = data.tier;
+
+      resultsPanel.style.display = 'block';
+    } catch (e) {
+      errorBox.textContent = 'Could not reach the server.';
+      errorBox.classList.add('show');
+    } finally {
+      analyzeBtn.disabled = false;
+      analyzeBtn.textContent = 'Analyze smear';
+    }
+  });
+</script>
+</body>
+</html>

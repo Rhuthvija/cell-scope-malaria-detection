@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CELL SCOPE — AI Hematology & Malaria Diagnostic Suite</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- TOP CLEAN NAVBAR (HOME, DIAGNOSIS, PATIENT TRACKING, ANALYTICS) -->
+<nav class="navbar">
+  <a class="brand-logo" onclick="switchTab('home')">
+    <div class="brand-symbol"></div>
+    <span class="brand-title">CELL SCOPE</span>
+  </a>
+  <div class="nav-links">
+    <a class="nav-item active" id="nav-home" onclick="switchTab('home')">Home</a>
+    <a class="nav-item" id="nav-diagnosis" onclick="switchTab('diagnosis')">Diagnosis</a>
+    <a class="nav-item" id="nav-tracking" onclick="switchTab('tracking')">Patient Records</a>
+    <a class="nav-item" id="nav-analytics" onclick="switchTab('analytics')">Analytics</a>
+  </div>
+</nav>
+
+<!-- SECTION 1: COVER HERO WITH ABSTRACT GLOSSY 3D CELLULAR ANIMATION -->
+<section class="hero-section" id="page-home">
+  <canvas id="cellular-canvas" aria-hidden="true"></canvas>
+  <div class="hero-content">
+    <h1 class="hero-title">CELL SCOPE</h1>
+    <p class="hero-slogan">Detect Early. Monitor Smarter. Save Lives.</p>
+    <div>
+      <button class="btn-hero" onclick="switchTab('diagnosis')">
+        <span>Run Diagnosis Test</span>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- MAIN CONTENT WRAPPER -->
+<div class="main-wrapper">
+
+  <!-- =========================================================================
+       SECTION 2 & 3: PATIENT SETUP, UPLOAD PREVIEW & DIAGNOSIS RESULTS
+       ========================================================================= -->
+  <div id="page-diagnosis" style="display: none;">
+
+    <!-- Patient Details Registration Card -->
+    <section class="glass-card">
+      <h2 class="card-title">👤 Patient Details Registration</h2>
+      
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Patient Name *</label>
+          <input type="text" class="form-input" id="patient-name-input" placeholder="e.g. Vennela Indukuri" value="Vennela Indukuri" onkeyup="checkPatientAutoAccess()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Patient ID / MRN</label>
+          <input type="text" class="form-input" id="patient-id-input" placeholder="CS-9042" value="CS-9042">
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Age *</label>
+          <input type="number" class="form-input" id="patient-age" placeholder="28" value="28">
+        </div>
+        <div class="grid-2" style="gap: 12px;">
+          <div class="form-group">
+            <label class="form-label">Gender</label>
+            <select class="form-select" id="patient-gender">
+              <option value="Female">Female</option>
+              <option value="Male">Male</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Phone Number</label>
+            <input type="text" class="form-input" id="patient-phone" placeholder="+1 (555) 019-2834" value="+1 (555) 019-2834">
+          </div>
+        </div>
+      </div>
+
+      <!-- Inline Error Banner -->
+      <div id="patient-save-error" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid var(--c-red); border-radius: 8px; padding: 10px 14px; color: #fca5a5; font-size: 0.88rem; margin-bottom: 12px;">
+        <span id="patient-save-error-text"></span>
+      </div>
+
+      <!-- Confirmation / Linked Banner -->
+      <div id="patient-alert-banner" style="display: none; background: rgba(16, 185, 129, 0.12); border: 1px solid var(--c-green); border-radius: 8px; padding: 12px 16px; color: var(--c-green-light); font-size: 0.9rem; margin-bottom: 14px;">
+        <span id="patient-alert-text">Existing patient history linked.</span>
+      </div>
+
+      <!-- Save Patient Action Row -->
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-top: 8px;">
+        <div style="font-size: 0.82rem; color: var(--text-muted);" id="patient-confirm-subtext">
+          <span style="color: var(--c-cyan-light);">*</span> Required: Patient Name &amp; Age. Click to register or update in database.
+        </div>
+        <button class="btn-action" id="btn-save-patient" type="button" onclick="savePatientDetails()" style="min-width: 220px;">
+          <span id="btn-save-patient-icon">✓</span>
+          <span id="btn-save-patient-label">Save Patient Details</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Diagnosis Image Upload Card -->
+    <section class="glass-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+        <h2 class="card-title" style="margin-bottom: 0;">🔬 Blood Cell Image Upload</h2>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-action" id="btn-mode-single" style="font-size: 0.82rem; padding: 6px 14px;" onclick="setUploadMode('single')">Single Cell</button>
+          <button class="btn-action" id="btn-mode-smear" style="font-size: 0.82rem; padding: 6px 14px; background: rgba(255,255,255,0.1);" onclick="setUploadMode('smear')">Full Smear Field</button>
+        </div>
+      </div>
+
+      <!-- State 1: Default Drag & Drop Zone -->
+      <div class="glass-dropzone" id="upload-dropzone" onclick="document.getElementById('cell-file-input').click()">
+        <div style="font-size: 2.4rem; margin-bottom: 8px;">🧬</div>
+        <div style="font-family: var(--font-heading); font-size: 1.1rem; font-weight: 700;" id="dropzone-text">Drop thin-smear blood cell image here or click to browse</div>
+        <div style="font-size: 0.82rem; color: var(--text-muted); margin-top: 6px;" id="dropzone-subtext">PNG, JPG, TIFF format supported (Microscope focal scans)</div>
+        <input type="file" id="cell-file-input" accept="image/*" style="display: none;" onchange="handleFileSelect(event)">
+      </div>
+
+      <!-- State 2: Upload Confirmation Preview Card (Replaces Dropzone when image loaded) -->
+      <div class="upload-preview-card" id="upload-preview-card" style="display: none;">
+        <div class="preview-thumb-wrap">
+          <img id="preview-thumbnail-img" src="" alt="Cell Thumbnail" class="preview-thumbnail">
+        </div>
+        <div class="preview-details">
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <div class="preview-filename" id="preview-filename-text">blood_cell_sample.png</div>
+            <span class="badge-uploaded">✓ Image uploaded</span>
+          </div>
+          <div class="preview-meta">
+            <span id="preview-filesize-text">142.5 KB</span> · 
+            <span id="preview-mode-text">Single Cell Mode</span> · 
+            <span style="color: var(--c-cyan-light);">Ready for MobileNetV2 Analysis</span>
+          </div>
+        </div>
+        <div class="preview-actions">
+          <button class="btn-sm-secondary" onclick="document.getElementById('cell-file-input').click()" title="Select a different image">
+            <span>Change Image</span>
+          </button>
+          <button class="btn-sm-remove" onclick="removeUploadedImage(event)" title="Remove uploaded image">
+            <span>✕ Remove</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Presets -->
+      <div style="margin-bottom: 24px;">
+        <div style="font-size: 0.78rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">QUICK SAMPLE PRESETS:</div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="btn-preset" onclick="loadSampleImage('parasitized')">
+            <span class="preset-dot dot-red"></span>
+            <span>🔴 Parasitized Cell</span>
+          </button>
+          <button class="btn-preset" onclick="loadSampleImage('uninfected')">
+            <span class="preset-dot dot-green"></span>
+            <span>🟢 Uninfected Cell</span>
+          </button>
+          <button class="btn-preset" onclick="loadSampleImage('smear')">
+            <span class="preset-dot dot-purple"></span>
+            <span>🩸 Full Field Smear</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Run Diagnosis Button (Disabled until image present; subtle pulsing glow when enabled) -->
+      <button class="btn-action" id="btn-run-ai" style="width: 100%; justify-content: center;" onclick="runDiagnostics()" disabled>
+        <span id="btn-run-ai-label">Select or drop an image to run diagnosis</span>
+      </button>
+    </section>
+
+    <!-- Inference Loading Modal / State Overlay -->
+    <div class="inference-loader-overlay" id="inference-loader" style="display: none;">
+      <div class="inference-loader-card">
+        <div class="loader-spinner-ring"></div>
+        <div class="loader-stage-title" id="loader-stage-text">Loading MobileNetV2 Model...</div>
+        <div class="loader-subtext" id="loader-subtext">Executing convolutional feature extraction and Grad-CAM saliency mapping</div>
+        <div class="loader-progress-bar">
+          <div class="loader-progress-fill" id="loader-progress-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         SECTION 4: DIAGNOSIS RESULTS PANEL (SIDE-BY-SIDE + GRAD-CAM + RISK GAUGE)
+         ======================================================================= -->
+    <section class="glass-card result-panel" id="diagnosis-result-panel" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--c-glass-border); padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; gap: 10px;">
+        <div>
+          <span class="badge-tag" id="res-badge-mode">AI Hematology Screening</span>
+          <h2 class="card-title" style="margin: 6px 0 0 0;" id="res-header-title">Diagnostic Evaluation Results</h2>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span class="badge-saved" id="res-badge-saved">✓ Saved to Patient Record #<span id="res-visit-num">1</span></span>
+          <button class="btn-action" style="font-size: 0.82rem; padding: 6px 14px;" onclick="downloadCurrentVisitPDF()">Download PDF Report 📄</button>
+        </div>
+      </div>
+
+      <!-- Prominent Diagnosis & Confidence Headline -->
+      <div class="result-headline-box" id="res-headline-box">
+        <div class="result-score-readout">
+          <div class="result-score-number" id="res-confidence-pct">94.2%</div>
+          <div class="result-score-label">Confidence Score</div>
+        </div>
+        <div class="result-verdict-wrap">
+          <div class="result-verdict-title" id="res-verdict-title">PARASITIZED (P. falciparum-consistent)</div>
+          <div class="result-verdict-desc" id="res-verdict-desc">Intracellular ring-form trophozoites and chromatin dots identified.</div>
+        </div>
+      </div>
+
+      <!-- Side-by-Side Images (Original Sample vs. Grad-CAM Explainability Map) -->
+      <div class="image-comparison-grid">
+        <!-- Original Image Glass Card -->
+        <div class="image-card">
+          <div class="image-card-header">
+            <span class="image-card-title">🔬 Original Sample</span>
+            <span class="image-card-sub" id="res-img-dim">Thin Smear Focal Scan</span>
+          </div>
+          <div class="image-preview-container">
+            <img id="res-original-img" src="" alt="Original Cell Sample" class="result-cell-image">
+          </div>
+          <div class="image-card-footer">
+            <span>High-magnification microscopy input</span>
+          </div>
+        </div>
+
+        <!-- Grad-CAM Heatmap Glass Card -->
+        <div class="image-card">
+          <div class="image-card-header">
+            <span class="image-card-title">🔥 Grad-CAM Explainability Map</span>
+            <span class="badge-gradcam">Jet / Plasma Colormap</span>
+          </div>
+          <div class="image-preview-container">
+            <img id="res-gradcam-img" src="" alt="Grad-CAM Explainability Overlay" class="result-cell-image">
+          </div>
+          <div class="gradcam-legend" role="img" aria-label="Grad-CAM activation scale: low activation to high activation">
+            <span>Low activation</span>
+            <div class="gradcam-legend-scale" aria-hidden="true"></div>
+            <span>High activation</span>
+          </div>
+          <div class="image-card-footer">
+            <span>MobileNetV2 final convolutional-layer activation (40% opacity)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Semi-Circular Risk Meter Gauge & Dynamic Tagline Section -->
+      <div class="risk-meter-section">
+        <div class="risk-meter-header">
+          <h3 style="font-family: var(--font-heading); font-size: 1.15rem; color: var(--c-lavender);">Clinical Risk Assessment & Severity Meter</h3>
+          <span class="risk-tier-pill" id="res-risk-tier-pill">High Risk</span>
+        </div>
+
+        <div class="risk-meter-container">
+          <!-- Semi-circular SVG Gauge -->
+          <div class="gauge-svg-wrap">
+            <svg viewBox="0 0 240 135" class="gauge-svg">
+              <defs>
+                <linearGradient id="gauge-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stop-color="#10b981" />
+                  <stop offset="25%" stop-color="#84cc16" />
+                  <stop offset="50%" stop-color="#facc15" />
+                  <stop offset="75%" stop-color="#f97316" />
+                  <stop offset="100%" stop-color="#ef4444" />
+                </linearGradient>
+                <filter id="gauge-glow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+              </defs>
+
+              <!-- Gauge Background Track -->
+              <path d="M 30 120 A 90 90 0 0 1 210 120" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="18" stroke-linecap="round" />
+              <!-- Colored Gradient Arc -->
+              <path d="M 30 120 A 90 90 0 0 1 210 120" fill="none" stroke="url(#gauge-gradient)" stroke-width="18" stroke-linecap="round" filter="url(#gauge-glow)" />
+
+              <!-- Needle Pointer Group (Rotates around center at 120, 120) -->
+              <g id="gauge-needle-group" transform="rotate(-90, 120, 120)" style="transition: transform 1.2s cubic-bezier(0.34, 1.56, 0.64, 1);">
+                <line x1="120" y1="120" x2="120" y2="40" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" />
+                <polygon points="116,45 124,45 120,32" fill="#ffffff" />
+                <circle cx="120" cy="120" r="8" fill="#7c3aed" stroke="#ffffff" stroke-width="2.5" />
+              </g>
+
+              <!-- Scale Labels -->
+              <text x="32" y="133" fill="#94a3b8" font-size="9" font-weight="600" text-anchor="middle">CLEAR</text>
+              <text x="75" y="60" fill="#94a3b8" font-size="8" font-weight="600" text-anchor="middle">LOW</text>
+              <text x="120" y="30" fill="#94a3b8" font-size="8" font-weight="600" text-anchor="middle">MOD</text>
+              <text x="165" y="60" fill="#94a3b8" font-size="8" font-weight="600" text-anchor="middle">HIGH</text>
+              <text x="208" y="133" fill="#ef4444" font-size="9" font-weight="700" text-anchor="middle">CRITICAL</text>
+            </svg>
+          </div>
+
+          <!-- Dynamic Bold Risk Tagline Display -->
+          <div class="risk-tagline-card" id="res-risk-tagline-card">
+            <div class="risk-tagline-badge" id="res-risk-badge-label">HIGH RISK LEVEL</div>
+            <div class="risk-tagline-text" id="res-risk-tagline-text">"High risk — consult a physician promptly"</div>
+            <div class="risk-tagline-sub" id="res-risk-subtext">Clinical correlation with patient history and Giemsa microscopy advised.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Buttons Row -->
+      <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 28px; flex-wrap: wrap;">
+        <button class="btn-sm-secondary" onclick="resetDiagnosisForm()">+ Run Another Diagnosis</button>
+        <button class="btn-action" onclick="switchTab('tracking')">View Patient Records Table ↗</button>
+        <button class="btn-action" style="background: linear-gradient(135deg, var(--c-cyan), var(--c-electric-blue));" onclick="viewActivePatientAnalytics()">View Patient Analytics 📊</button>
+      </div>
+    </section>
+
+  </div>
+
+
+  <!-- =========================================================================
+       SECTION 4: REAL DATABASE-BACKED PATIENT RECORDS (FULL VISIT HISTORY)
+       ========================================================================= -->
+  <div id="page-tracking" style="display: none;">
+    <section class="glass-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 class="card-title" style="margin-bottom: 4px;">📋 Saved Patient Database Records</h2>
+          <p style="color: var(--text-muted); font-size: 0.88rem;">Complete multi-visit diagnostic history stored in SQLite database, sorted newest first.</p>
+        </div>
+        <button class="btn-action" style="font-size: 0.82rem; padding: 8px 18px;" onclick="loadPatientRecordsFromDB()">Refresh DB Records</button>
+      </div>
+
+      <div style="overflow-x: auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Patient ID</th>
+              <th>Patient Name</th>
+              <th>Age</th>
+              <th>Gender</th>
+              <th>Visit Date</th>
+              <th>Diagnosis Result</th>
+              <th>Confidence / Risk</th>
+              <th>Record Action</th>
+            </tr>
+          </thead>
+          <tbody id="db-patient-records-tbody">
+            <!-- Populated directly from backend Database -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+
+  <!-- =========================================================================
+       SECTION 5: REDESIGNED PATIENT-CENTRIC & GLOBAL ANALYTICS
+       ========================================================================= -->
+  <div id="page-analytics" style="display: none;">
+    
+    <!-- Top View Switcher Navigation (All Patients vs Patient-Centric) -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px;">
+      <div class="analytics-tabs">
+        <button class="analytics-tab-btn active" id="btn-analytics-all" onclick="switchAnalyticsView('all')">
+          <span>🌐 All Patients Global Overview</span>
+        </button>
+        <button class="analytics-tab-btn" id="btn-analytics-patient" onclick="switchAnalyticsView('patient')">
+          <span>👤 Patient-Centric History (<span id="active-patient-name-tab">Vennela</span>)</span>
+        </button>
+      </div>
+      <div id="analytics-filter-info" style="font-size: 0.85rem; color: var(--text-muted);">
+        Showing aggregate analytics across all registered patient visits
+      </div>
+    </div>
+
+    <!-- VIEW A: ALL PATIENTS GLOBAL OVERVIEW -->
+    <div id="view-analytics-all">
+      
+      <!-- Patient Directory List for quick patient drilldown -->
+      <section class="glass-card" style="margin-bottom: 28px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <h3 style="font-family: var(--font-heading); color: var(--c-cyan-light); font-size: 1.15rem;">👥 Patient Directory & Visit History</h3>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">Click "View Analytics" on any patient to inspect their longitudinal infection trajectory.</p>
+          </div>
+        </div>
+
+        <div style="overflow-x: auto;">
+          <table class="data-table" style="font-size: 0.88rem;">
+            <thead>
+              <tr>
+                <th>Patient ID</th>
+                <th>Name</th>
+                <th>Age / Gender</th>
+                <th>Total Tests</th>
+                <th>Latest Visit</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="analytics-patients-list-tbody">
+              <!-- Populated dynamically with patients -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Global Aggregate Analytics Grid -->
+      <section class="glass-card">
+        <h2 class="card-title">📊 Population Infection Trends & Scatter Distribution</h2>
+        
+        <div class="grid-2">
+          <div style="background: rgba(0,0,0,0.3); border-radius: 14px; padding: 20px; border: 1px solid var(--c-glass-border);">
+            <h4 style="font-family: var(--font-heading); color: var(--c-cyan-light); margin-bottom: 12px;">Patient Age vs Diagnosis Scatter Distribution</h4>
+            <div style="height: 260px;"><canvas id="scatter-age-chart"></canvas></div>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.3); border-radius: 14px; padding: 20px; border: 1px solid var(--c-glass-border);">
+            <h4 style="font-family: var(--font-heading); color: var(--c-pink-light); margin-bottom: 12px;">Screening Activity & Diagnostic Trends Over Time</h4>
+            <div style="height: 260px;"><canvas id="time-series-chart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-top: 24px;">
+          <div style="background: rgba(0,0,0,0.3); border-radius: 14px; padding: 20px; border: 1px solid var(--c-glass-border);">
+            <h4 style="font-family: var(--font-heading); color: var(--c-green-light); margin-bottom: 12px;">Positive vs Negative Diagnostic Ratio</h4>
+            <div style="height: 220px;"><canvas id="ratio-bar-chart"></canvas></div>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.3); border-radius: 14px; padding: 20px; border: 1px solid var(--c-glass-border); display: flex; flex-direction: column; justify-content: center; text-align: center;">
+            <div style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Total Database Screenings Recorded</div>
+            <div style="font-size: 3.4rem; font-weight: 900; color: var(--c-cyan-light);" id="stat-total-screenings">0</div>
+            <div style="font-size: 0.95rem; color: var(--text-main); margin-top: 8px;">
+              Positive Cases: <strong id="stat-positive-count" style="color: var(--c-pink-light);">0</strong> · 
+              Negative Cases: <strong id="stat-negative-count" style="color: var(--c-green-light);">0</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- VIEW B: INDIVIDUAL PATIENT ANALYTICS VIEW -->
+    <div id="view-analytics-patient" style="display: none;">
+      
+      <section class="glass-card">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--c-glass-border); padding-bottom: 18px;">
+          <div>
+            <button class="btn-sm-secondary" style="margin-bottom: 10px;" onclick="switchAnalyticsView('all')">← Back to All Patients</button>
+            <h2 class="card-title" style="margin-bottom: 4px;">
+              Patient Analytics: <span id="patient-view-name" style="color: var(--c-cyan-light);">Vennela Indukuri</span>
+            </h2>
+            <div style="color: var(--text-muted); font-size: 0.9rem;">
+              ID: <strong id="patient-view-code" style="color: #fff; font-family: var(--font-mono);">CS-9042</strong> · 
+              Age/Gender: <span id="patient-view-demog">28 / Female</span> · 
+              Phone: <span id="patient-view-phone">+1 (555) 019-2834</span>
+            </div>
+          </div>
+          <button class="btn-action" style="font-size: 0.82rem; padding: 8px 18px;" onclick="downloadPatientFullReportPDF()">
+            Download Comprehensive PDF Report 📄
+          </button>
+        </div>
+
+        <!-- 4 Stat Summary Cards for Patient -->
+        <div class="grid-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
+          <div class="stat-mini-card">
+            <div class="stat-mini-title">TOTAL VISITS</div>
+            <div class="stat-mini-value" id="pt-stat-total">0</div>
+          </div>
+          <div class="stat-mini-card">
+            <div class="stat-mini-title">POSITIVE TESTS</div>
+            <div class="stat-mini-value" style="color: var(--c-pink-light);" id="pt-stat-positive">0</div>
+          </div>
+          <div class="stat-mini-card">
+            <div class="stat-mini-title">LATEST RESULT</div>
+            <div class="stat-mini-value" style="font-size: 1.3rem; color: var(--c-cyan-light);" id="pt-stat-latest">Uninfected</div>
+          </div>
+          <div class="stat-mini-card">
+            <div class="stat-mini-title">LONGITUDINAL TREND</div>
+            <div class="stat-mini-value" style="font-size: 0.95rem; line-height: 1.4; color: var(--c-lavender);" id="pt-stat-trend">Initial visit recorded</div>
+          </div>
+        </div>
+
+        <!-- Patient Parasitemia & Confidence Over Time Chart -->
+        <div style="background: rgba(0,0,0,0.3); border-radius: 14px; padding: 24px; border: 1px solid var(--c-glass-border); margin-bottom: 28px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+            <h4 style="font-family: var(--font-heading); color: var(--c-cyan-light); margin-bottom: 0;">
+              📈 Parasitemia Rate & Confidence % Over Time (Chronological)
+            </h4>
+            <span style="font-size: 0.8rem; color: var(--text-muted);">One point per diagnostic visit</span>
+          </div>
+          <div style="height: 280px;"><canvas id="patient-trend-chart"></canvas></div>
+        </div>
+
+        <!-- Patient Visit Outcome Timeline -->
+        <div>
+          <h4 style="font-family: var(--font-heading); color: var(--c-lavender); margin-bottom: 16px;">
+            🗓️ Diagnostic Visit Outcome Timeline
+          </h4>
+          <div class="timeline-container" id="patient-timeline-list">
+            <!-- Populated with visit timeline items -->
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+<!-- ===========================================================================
+     SECTION 6: ENHANCED PRINTABLE & DOWNLOADABLE REPORT MODAL
+     =========================================================================== -->
+<div class="modal-overlay" id="report-modal">
+  <div class="modal-content">
+    <div style="border-bottom: 2px solid var(--c-electric-blue); padding-bottom: 16px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-start;">
+      <div>
+        <h1 style="font-family: var(--font-heading); font-size: 1.5rem; font-weight: 800; color: #0f172a;">CELL SCOPE — CLINICAL DIAGNOSTIC REPORT</h1>
+        <div style="font-size: 0.85rem; color: #64748b;">AI Micro-Hematology & Malaria Diagnostic Summary</div>
+      </div>
+      <div style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 700; color: #2563eb;" id="report-date-stamp">Date: 2026-08-14</div>
+    </div>
+
+    <!-- Patient Demographics -->
+    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 20px; font-size: 0.9rem;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
+        <div><strong>Patient Name:</strong> <span id="rep-name">Vennela Indukuri</span></div>
+        <div><strong>Patient ID:</strong> <span id="rep-id">CS-9042</span></div>
+        <div><strong>Age / Gender:</strong> <span id="rep-age-gender">28 / Female</span></div>
+        <div><strong>Contact Phone:</strong> <span id="rep-phone">+1 (555) 019-2834</span></div>
+      </div>
+    </div>
+
+    <!-- Diagnostic Verdict Banner -->
+    <div style="border-radius: 8px; padding: 18px; margin-bottom: 20px; background: #fff1f2; border: 2px solid #e11d48;" id="rep-verdict-box">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <div style="font-size: 0.75rem; text-transform: uppercase; color: #e11d48; font-weight: 800;">Diagnostic Finding</div>
+          <div style="font-size: 1.35rem; font-weight: 800; color: #9f1239;" id="rep-verdict">DIAGNOSIS: Malaria Detected</div>
+        </div>
+        <div style="text-align: right;">
+          <span style="font-size: 0.85rem; font-weight: 700; color: #9f1239;" id="rep-risk-band">High Risk</span>
+          <div style="font-size: 0.8rem; color: #64748b;" id="rep-confidence">94.2% Confidence</div>
+        </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 0.9rem; font-weight: 600; color: #334155;" id="rep-tagline">
+        "High risk — consult a physician promptly"
+      </div>
+    </div>
+
+    <!-- Modal Images Preview (Original & Grad-CAM) -->
+    <div id="rep-images-container" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
+      <div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; text-align: center; background: #f8fafc;">
+        <div style="font-size: 0.8rem; font-weight: 700; color: #475569; margin-bottom: 6px;">Original Blood Cell Smear</div>
+        <img id="rep-img-original" src="" alt="Original Cell" style="max-height: 180px; width: auto; border-radius: 6px; object-fit: contain;">
+      </div>
+      <div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; text-align: center; background: #f8fafc;">
+        <div style="font-size: 0.8rem; font-weight: 700; color: #475569; margin-bottom: 6px;">Grad-CAM Explainability Heatmap</div>
+        <img id="rep-img-gradcam" src="" alt="Grad-CAM" style="max-height: 180px; width: auto; border-radius: 6px; object-fit: contain;">
+      </div>
+    </div>
+
+    <!-- Clinical Remedies & Treatment Guidelines -->
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #0284c7; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 0.88rem; color: #334155;">
+      <strong>💊 Prescribed Medical Treatment & Guidelines:</strong>
+      <div id="rep-rx-content" style="margin-top: 6px; line-height: 1.5;">
+        • Artemether-Lumefantrine (Coartem 80/480mg) 6-dose oral course.<br>
+        • Supportive Therapy: Paracetamol 500mg as needed for pyrexia, oral fluid rehydration.<br>
+        • Clinical Protocol: Follow-up blood smear evaluation in 48-72 hours.
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 12px;">
+      <button class="btn-action" style="background: #cbd5e1; color: #0f172a;" onclick="closeReportModal()">Close</button>
+      <button class="btn-action" onclick="downloadActiveVisitPDF()">Download PDF 📄</button>
+      <button class="btn-action" style="background: linear-gradient(135deg, var(--c-cyan), var(--c-electric-blue));" onclick="window.print()">Print Report 🖨️</button>
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
