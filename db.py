@@ -5,6 +5,7 @@ Handles patient registration, diagnostic visit logs, and persistence.
 """
 
 import math
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -53,37 +54,42 @@ def get_conn():
         tbl_check = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='patients'").fetchone()
         if not tbl_check:
             conn.executescript(SCHEMA)
-            now_iso = datetime.now(timezone.utc).isoformat()
-            
-            cur1 = conn.execute(
-                "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("Vennela Indukuri", "CS-9042", 28, "Female", "+1 (555) 019-2834", now_iso)
-            )
-            p1_id = cur1.lastrowid
-            conn.execute(
-                "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (p1_id, "2026-08-01", "Parasitized", 94.2, "High risk", "Parasitemia detected. Medical evaluation advised.", 120, 8, 6.67, 3.4, 12.6, "High Parasitemia Level", now_iso)
-            )
 
-            cur2 = conn.execute(
-                "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("Amina Diallo", "CS-7721", 27, "Female", "+1 (555) 048-9921", now_iso)
-            )
-            p2_id = cur2.lastrowid
-            conn.execute(
-                "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (p2_id, "2026-08-02", "Parasitized", 96.8, "Critical risk", "🚨 Immediately consult a doctor", 150, 12, 8.0, 4.6, 13.5, "High Parasitemia Level", now_iso)
-            )
+            # Demo/seed data is only inserted for local development so the UI
+            # isn't empty while testing. Render sets RENDER=true automatically
+            # on every deploy, so production databases start empty.
+            if not os.environ.get("RENDER"):
+                now_iso = datetime.now(timezone.utc).isoformat()
 
-            cur3 = conn.execute(
-                "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("Elena Rostova", "CS-3108", 45, "Female", "+1 (555) 032-1104", now_iso)
-            )
-            p3_id = cur3.lastrowid
-            conn.execute(
-                "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (p3_id, "2026-08-12", "Uninfected", 99.4, "Negative / Clear", "Clean sample. Routine follow-up only.", 110, 0, 0.0, 0.0, 3.3, "No Malaria Parasites Detected", now_iso)
-            )
+                cur1 = conn.execute(
+                    "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("Vennela Indukuri", "CS-9042", 28, "Female", "+1 (555) 019-2834", now_iso)
+                )
+                p1_id = cur1.lastrowid
+                conn.execute(
+                    "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (p1_id, "2026-08-01", "Parasitized", 94.2, "High risk", "Parasitemia detected. Medical evaluation advised.", 120, 8, 6.67, 3.4, 12.6, "High Parasitemia Level", now_iso)
+                )
+
+                cur2 = conn.execute(
+                    "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("Amina Diallo", "CS-7721", 27, "Female", "+1 (555) 048-9921", now_iso)
+                )
+                p2_id = cur2.lastrowid
+                conn.execute(
+                    "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (p2_id, "2026-08-02", "Parasitized", 96.8, "Critical risk", "🚨 Immediately consult a doctor", 150, 12, 8.0, 4.6, 13.5, "High Parasitemia Level", now_iso)
+                )
+
+                cur3 = conn.execute(
+                    "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("Elena Rostova", "CS-3108", 45, "Female", "+1 (555) 032-1104", now_iso)
+                )
+                p3_id = cur3.lastrowid
+                conn.execute(
+                    "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (p3_id, "2026-08-12", "Uninfected", 99.4, "Negative / Clear", "Clean sample. Routine follow-up only.", 110, 0, 0.0, 0.0, 3.3, "No Malaria Parasites Detected", now_iso)
+                )
 
         yield conn
         conn.commit()
@@ -94,7 +100,7 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
-        
+
         # Ensure column migrations for existing databases
         for col_def in [
             "ALTER TABLE patients ADD COLUMN patient_code TEXT",
@@ -144,18 +150,18 @@ def create_or_get_patient(name: str, patient_code: str = None, age: int = 30, ge
             row = conn.execute("SELECT id FROM patients WHERE patient_code = ?", (patient_code.strip(),)).fetchone()
         if not row:
             row = conn.execute("SELECT id FROM patients WHERE LOWER(name) = LOWER(?)", (name_clean,)).fetchone()
-            
+
         if row:
             conn.execute(
                 "UPDATE patients SET name = ?, age = ?, gender = ?, phone = ? WHERE id = ?",
                 (name_clean, int(age or 30), gender or "Male", phone or "", row["id"])
             )
             return row["id"]
-        
+
         total_p = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
         if not patient_code or not patient_code.strip():
             patient_code = f"CS-{9040 + total_p + 1}"
-            
+
         cur = conn.execute(
             """INSERT INTO patients (name, patient_code, age, gender, phone, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -223,7 +229,7 @@ def list_visits(patient_id: int):
 def get_visit_by_id(visit_id: int):
     with get_conn() as conn:
         query = """
-        SELECT 
+        SELECT
             v.*,
             p.name as patient_name,
             p.patient_code,
@@ -242,7 +248,7 @@ def get_all_visit_records():
     """Returns every diagnostic visit record in the database with patient details, newest first."""
     with get_conn() as conn:
         query = """
-        SELECT 
+        SELECT
             p.id as patient_id,
             p.name,
             p.patient_code,
@@ -280,7 +286,7 @@ def get_analytics_dataset():
     """Generates scatter plot data and time-series points directly from database records."""
     with get_conn() as conn:
         query = """
-        SELECT 
+        SELECT
             p.id as patient_id,
             p.name,
             p.age,
@@ -296,11 +302,11 @@ def get_analytics_dataset():
         """
         rows = conn.execute(query).fetchall()
         data = [dict(r) for r in rows]
-        
+
         total_visits = len(data)
         positive_cases = sum(1 for r in data if r["diagnosis_result"] in ["Parasitized", "Malaria Detected"])
         negative_cases = total_visits - positive_cases
-        
+
         scatter_age_parasitemia = [
             {
                 "x": r["age"],
@@ -312,7 +318,7 @@ def get_analytics_dataset():
             }
             for r in data
         ]
-        
+
         time_series = [
             {
                 "x": r["visit_date"],
