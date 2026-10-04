@@ -19,6 +19,8 @@ Expected folder structure after unzipping:
 
 Usage:
   python train_model.py --data_dir cell_images --epochs 10
+  (add --no_stain_norm to train on raw colours; app.py normalizes stains at inference,
+   so keep normalization on for a model that matches the app)
 
 Output:
   malaria_model.keras   <- the trained model, used by app.py
@@ -37,6 +39,17 @@ from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 IMG_SIZE = 128  # small enough to train fast, large enough to keep parasite detail
+
+
+def _stain_normalize(image):
+    """ImageDataGenerator hook: Macenko-normalize one image (float 0-255 in, float out).
+    Falls back to the original image if normalization fails (e.g. a nearly blank crop)."""
+    import numpy as np
+    import stain_norm
+    try:
+        return stain_norm.normalize(np.clip(image, 0, 255).astype("uint8")).astype("float32")
+    except Exception:
+        return image
 
 
 def build_model(img_size: int) -> tf.keras.Model:
@@ -73,6 +86,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--val_split", type=float, default=0.2)
     parser.add_argument("--out", default="malaria_model.keras")
+    parser.add_argument("--no_stain_norm", dest="stain_norm", action="store_false",
+                        help="Skip Macenko stain normalization (app.py applies it at inference)")
     args = parser.parse_args()
 
     if not os.path.isdir(args.data_dir):
@@ -81,15 +96,27 @@ def main():
             f"(see the docstring at the top of this file for the link)."
         )
 
-    datagen = ImageDataGenerator(
+    # Stain normalization is applied at inference time in app.py, so training must
+    # see the same normalized colours -- otherwise the model is evaluated on a
+    # colour distribution it never trained on (train/serve skew).
+    preprocess = _stain_normalize if args.stain_norm else None
+
+    # Augmentation is for training only. Validation images must stay untouched,
+    # or the validation score becomes noisy and no longer reflects real images.
+    train_datagen = ImageDataGenerator(
         validation_split=args.val_split,
         rotation_range=20,
         horizontal_flip=True,
         vertical_flip=True,
         zoom_range=0.1,
+        preprocessing_function=preprocess,
+    )
+    val_datagen = ImageDataGenerator(
+        validation_split=args.val_split,
+        preprocessing_function=preprocess,
     )
 
-    train_gen = datagen.flow_from_directory(
+    train_gen = train_datagen.flow_from_directory(
         args.data_dir,
         target_size=(IMG_SIZE, IMG_SIZE),
         batch_size=args.batch_size,
@@ -98,7 +125,7 @@ def main():
         shuffle=True,
         seed=42,
     )
-    val_gen = datagen.flow_from_directory(
+    val_gen = val_datagen.flow_from_directory(
         args.data_dir,
         target_size=(IMG_SIZE, IMG_SIZE),
         batch_size=args.batch_size,

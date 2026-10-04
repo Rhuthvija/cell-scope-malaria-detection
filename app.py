@@ -103,7 +103,16 @@ def classify_rgb(rgb_image: np.ndarray, filename: str = "sample") -> float:
         print(f"[DEBUG INFERENCE] Model='MobileNetV2' file='{filename}' raw_pred={raw_pred.tolist()} -> prob_parasitized={prob_parasitized:.4f}")
         return prob_parasitized
 
-    except Exception:
+    except Exception as model_err:
+        # The colour heuristic below is NOT the trained model. Using it silently would
+        # show confident-looking results that no model produced, so it only runs when
+        # explicitly enabled (e.g. for UI demos without TensorFlow installed).
+        if os.environ.get("CELLSCOPE_ALLOW_HEURISTIC") != "1":
+            raise RuntimeError(
+                "Trained model could not be loaded; refusing to fall back to the colour "
+                "heuristic. Set CELLSCOPE_ALLOW_HEURISTIC=1 to allow it for demos."
+            ) from model_err
+        print("[WARNING] Using colour heuristic instead of the trained model.")
         # 2. Robust Biological Giemsa Stain & Chromatin Inclusion Analyzer
         import cv2
         gray = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2GRAY)
@@ -432,23 +441,31 @@ def api_diagnose():
             cv2.circle(rgb_image, (62, 50), 3, (244, 63, 94), -1)
 
     # 1. Model Inference
-    if mode == "smear":
-        cells = rbc_detection.detect_cells(rgb_image)
-        if cells:
+    try:
+        if mode == "smear":
+            cells = rbc_detection.detect_cells(rgb_image)
+            if not cells:
+                # Never invent a result: if segmentation finds no cells, say so.
+                return jsonify({
+                    "success": False,
+                    "error": "No red blood cells were detected in this image. Check focus and "
+                             "magnification, or use single-cell mode with a cropped cell image."
+                }), 422
+            cell_probs = [classify_rgb(c.crop, filename=f"crop_{c.centroid}") for c in cells]
             cells_analyzed = len(cells)
-            cells_parasitized = sum(1 for c in cells if classify_rgb(c.crop, filename=f"crop_{c.center}") >= 0.5)
+            cells_parasitized = sum(1 for p in cell_probs if p >= 0.5)
             parasitemia_pct = round((cells_parasitized / cells_analyzed) * 100, 2)
+            # A smear is positive if ANY cell is parasitized, not only when most cells are.
+            # The most suspicious cell's probability drives the smear-level label and confidence;
+            # parasitemia_pct (share of infected cells) still drives the risk band.
+            prob_parasitized = max(cell_probs)
         else:
-            cells_analyzed = 140
-            cells_parasitized = 9
-            parasitemia_pct = 6.43
-        
-        prob_parasitized = parasitemia_pct / 100.0 if cells_analyzed else 0.5
-    else:
-        prob_parasitized = classify_rgb(rgb_image, filename=filename)
-        cells_analyzed = 1
-        cells_parasitized = 1 if prob_parasitized >= 0.5 else 0
-        parasitemia_pct = round(prob_parasitized * 100, 2) if prob_parasitized >= 0.5 else 0.0
+            prob_parasitized = classify_rgb(rgb_image, filename=filename)
+            cells_analyzed = 1
+            cells_parasitized = 1 if prob_parasitized >= 0.5 else 0
+            parasitemia_pct = round(prob_parasitized * 100, 2) if prob_parasitized >= 0.5 else 0.0
+    except RuntimeError as err:
+        return jsonify({"success": False, "error": str(err)}), 503
 
     is_parasitized = (prob_parasitized >= 0.5)
     label = "Parasitized" if is_parasitized else "Uninfected"
