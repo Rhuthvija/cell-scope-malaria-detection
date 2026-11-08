@@ -6,6 +6,10 @@
 <title>CELL SCOPE — AI Hematology & Malaria Diagnostic Suite</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
+<link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+<meta name="theme-color" content="#0b132b">
 </head>
 <body>
 
@@ -16,10 +20,16 @@
     <span class="brand-title">CELL SCOPE</span>
   </a>
   <div class="nav-links">
-    <a class="nav-item active" id="nav-home" onclick="switchTab('home')">Home</a>
-    <a class="nav-item" id="nav-diagnosis" onclick="switchTab('diagnosis')">Diagnosis</a>
-    <a class="nav-item" id="nav-tracking" onclick="switchTab('tracking')">Patient Records</a>
-    <a class="nav-item" id="nav-analytics" onclick="switchTab('analytics')">Analytics</a>
+    <a class="nav-item active" id="nav-home" data-i18n="nav_home" onclick="switchTab('home')">Home</a>
+    <a class="nav-item" id="nav-diagnosis" data-i18n="nav_diagnosis" onclick="switchTab('diagnosis')">Diagnosis</a>
+    <a class="nav-item" id="nav-tracking" data-i18n="nav_tracking" onclick="switchTab('tracking')">Patient Records</a>
+    <a class="nav-item" id="nav-analytics" data-i18n="nav_analytics" onclick="switchTab('analytics')">Analytics</a>
+    <a class="nav-item" id="nav-outbreaks" data-i18n="nav_outbreaks" onclick="switchTab('outbreaks')">Outbreak Map</a>
+    <select id="lang-select" class="nav-lang-select" aria-label="Language" onchange="setLanguage(this.value)">
+      <option value="en">EN</option>
+      <option value="te">తెలుగు</option>
+      <option value="hi">हिंदी</option>
+    </select>
   </div>
 </nav>
 
@@ -31,7 +41,7 @@
     <p class="hero-slogan">Detect Early. Monitor Smarter. Save Lives.</p>
     <div>
       <button class="btn-hero" onclick="switchTab('diagnosis')">
-        <span>Run Diagnosis Test</span>
+        <span data-i18n="hero_cta">Run Diagnosis Test</span>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
       </button>
     </div>
@@ -48,27 +58,27 @@
 
     <!-- Patient Details Registration Card -->
     <section class="glass-card">
-      <h2 class="card-title">👤 Patient Details Registration</h2>
+      <h2 class="card-title" data-i18n="patient_card">👤 Patient Details Registration</h2>
       
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">Patient Name *</label>
+          <label class="form-label" data-i18n="lbl_name">Patient Name *</label>
           <input type="text" class="form-input" id="patient-name-input" placeholder="e.g. Vennela Indukuri" value="Vennela Indukuri" onkeyup="checkPatientAutoAccess()">
         </div>
         <div class="form-group">
-          <label class="form-label">Patient ID / MRN</label>
+          <label class="form-label" data-i18n="lbl_id">Patient ID / MRN</label>
           <input type="text" class="form-input" id="patient-id-input" placeholder="CS-9042" value="CS-9042">
         </div>
       </div>
 
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">Age *</label>
+          <label class="form-label" data-i18n="lbl_age">Age *</label>
           <input type="number" class="form-input" id="patient-age" placeholder="28" value="28">
         </div>
         <div class="grid-2" style="gap: 12px;">
           <div class="form-group">
-            <label class="form-label">Gender</label>
+            <label class="form-label" data-i18n="lbl_gender">Gender</label>
             <select class="form-select" id="patient-gender">
               <option value="Female">Female</option>
               <option value="Male">Male</option>
@@ -76,8 +86,33 @@
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">Phone Number</label>
-            <input type="text" class="form-input" id="patient-phone" placeholder="+1 (555) 019-2834" value="+1 (555) 019-2834">
+            <label class="form-label" data-i18n="lbl_phone">Phone Number</label>
+            <input type="text" class="form-input" id="patient-phone" placeholder="+91 98480 12345" value="+91 98480 12345">
+          </div>
+        </div>
+      </div>
+
+      <!-- Rural surveillance: where the test happened and who did it -->
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label" data-i18n="lbl_village">Village</label>
+          <input type="text" class="form-input" id="rural-village" placeholder="e.g. Charla" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="lbl_district">District</label>
+          <input type="text" class="form-input" id="rural-district" placeholder="e.g. Bhadradri Kothagudem" autocomplete="off">
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label" data-i18n="lbl_worker">ASHA / Health Worker</label>
+          <input type="text" class="form-input" id="rural-worker" placeholder="e.g. ASHA Sunitha" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="lbl_location">GPS Location (optional)</label>
+          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <button type="button" class="btn-sm-secondary" id="rural-loc-btn" data-i18n="btn_location" onclick="captureLocation()">📍 Use My Location</button>
+            <span id="rural-loc-status" style="font-size: 0.82rem; color: var(--text-muted);"></span>
           </div>
         </div>
       </div>
@@ -107,7 +142,7 @@
     <!-- Diagnosis Image Upload Card -->
     <section class="glass-card">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
-        <h2 class="card-title" style="margin-bottom: 0;">🔬 Blood Cell Image Upload</h2>
+        <h2 class="card-title" style="margin-bottom: 0;" data-i18n="upload_card">🔬 Blood Cell Image Upload</h2>
         <div style="display: flex; gap: 8px;">
           <button class="btn-action" id="btn-mode-single" style="font-size: 0.82rem; padding: 6px 14px;" onclick="setUploadMode('single')">Single Cell</button>
           <button class="btn-action" id="btn-mode-smear" style="font-size: 0.82rem; padding: 6px 14px; background: rgba(255,255,255,0.1);" onclick="setUploadMode('smear')">Full Smear Field</button>
@@ -301,6 +336,20 @@
             <div class="risk-tagline-sub" id="res-risk-subtext">Clinical correlation with patient history and Giemsa microscopy advised.</div>
           </div>
         </div>
+      </div>
+
+      <!-- Rural next steps, referral and sharing (filled by rural.js) -->
+      <div class="risk-meter-section" id="rural-next" style="display: none; margin-top: 24px;">
+        <div class="risk-meter-header">
+          <h3 style="font-family: var(--font-heading); font-size: 1.15rem; color: var(--c-lavender);" data-i18n="next_steps">What To Do Next</h3>
+          <span class="risk-tier-pill" id="rural-refer-badge" style="display: none; background: rgba(239, 68, 68, 0.2); color: #fca5a5; border-color: var(--c-red);" data-i18n="refer_banner">Refer to Doctor / PHC</span>
+        </div>
+        <ul id="rural-next-list" class="rural-next-list"></ul>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px;">
+          <a class="btn-action" id="rural-wa-btn" target="_blank" rel="noopener" style="text-decoration: none; background: linear-gradient(135deg, #16a34a, #10b981);" data-i18n="btn_whatsapp">Share on WhatsApp</a>
+          <a class="btn-action" id="rural-108-btn" href="tel:108" style="display: none; text-decoration: none; background: linear-gradient(135deg, var(--c-red), var(--c-orange));" data-i18n="btn_call108">📞 Call 108 Ambulance</a>
+        </div>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 14px;" data-i18n="disclaimer">Screening only — not a final diagnosis. Confirm with an RDT or a trained microscopist.</p>
       </div>
 
       <!-- Action Buttons Row -->
@@ -503,6 +552,58 @@
 
   </div>
 
+  <!-- =========================================================================
+       SECTION 5B: OUTBREAK MAP — village-level clusters and referral list
+       ========================================================================= -->
+  <div id="page-outbreaks" style="display: none;">
+    <section class="glass-card">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 class="card-title" style="margin-bottom: 4px;" data-i18n="outbreak_title">🗺️ Malaria Outbreak Map</h2>
+          <p style="color: var(--text-muted); font-size: 0.88rem; max-width: 640px;" data-i18n="outbreak_sub">Village-level positive cases. A village is flagged as a hotspot when it has 3 or more positive tests in the selected period.</p>
+        </div>
+        <select class="form-select" id="outbreak-days" onchange="loadOutbreaks()" style="width: auto;">
+          <option value="7" data-i18n-days="7">Last 7 days</option>
+          <option value="14" selected data-i18n-days="14">Last 14 days</option>
+          <option value="30" data-i18n-days="30">Last 30 days</option>
+        </select>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
+        <div class="stat-mini-card"><div class="stat-mini-title" data-i18n="stat_tests">Tests</div><div class="stat-mini-value" id="ob-tests">–</div></div>
+        <div class="stat-mini-card"><div class="stat-mini-title" data-i18n="stat_pos">Positive</div><div class="stat-mini-value" style="color: var(--c-pink-light);" id="ob-pos">–</div></div>
+        <div class="stat-mini-card"><div class="stat-mini-title" data-i18n="stat_hot">Hotspot Villages</div><div class="stat-mini-value" style="color: var(--c-orange);" id="ob-hot">–</div></div>
+        <div class="stat-mini-card"><div class="stat-mini-title" data-i18n="stat_ref">Referrals</div><div class="stat-mini-value" style="color: var(--c-cyan-light);" id="ob-ref">–</div></div>
+      </div>
+
+      <div id="outbreak-map" class="outbreak-map"></div>
+      <p id="outbreak-map-note" style="display: none; font-size: 0.82rem; color: var(--text-muted); margin-top: 10px;" data-i18n="map_offline">Map needs internet. The village table below still works offline.</p>
+
+      <div style="overflow-x: auto; margin-top: 24px;">
+        <table class="data-table">
+          <thead><tr>
+            <th data-i18n="th_village">Village</th><th data-i18n="th_district">District</th><th data-i18n="th_tests">Tests</th>
+            <th data-i18n="th_pos">Positive</th><th data-i18n="th_positivity">Positivity</th><th data-i18n="th_last">Last Test</th><th data-i18n="th_status">Status</th>
+          </tr></thead>
+          <tbody id="outbreak-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="glass-card">
+      <h2 class="card-title" data-i18n="ref_title">🚑 Patients To Refer</h2>
+      <div style="overflow-x: auto;">
+        <table class="data-table">
+          <thead><tr>
+            <th data-i18n="th_date">Date</th><th data-i18n="th_patient">Patient</th><th data-i18n="th_age">Age</th>
+            <th data-i18n="th_village">Village</th><th data-i18n="th_risk">Risk</th><th data-i18n="th_worker">Health Worker</th>
+          </tr></thead>
+          <tbody id="referral-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
 </div>
 
 
@@ -560,11 +661,11 @@
 
     <!-- Clinical Remedies & Treatment Guidelines -->
     <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #0284c7; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 0.88rem; color: #334155;">
-      <strong>💊 Prescribed Medical Treatment & Guidelines:</strong>
+      <strong>💊 Recommended Next Steps:</strong>
       <div id="rep-rx-content" style="margin-top: 6px; line-height: 1.5;">
-        • Artemether-Lumefantrine (Coartem 80/480mg) 6-dose oral course.<br>
-        • Supportive Therapy: Paracetamol 500mg as needed for pyrexia, oral fluid rehydration.<br>
-        • Clinical Protocol: Follow-up blood smear evaluation in 48-72 hours.
+        • Confirm with RDT or a trained microscopist to identify the species.<br>
+        • Treat as per NCVBDC national guidelines through the ASHA worker / PHC.<br>
+        • Refer urgently if any danger sign appears.
       </div>
     </div>
 
@@ -577,5 +678,6 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/rural.js') }}"></script>
 </body>
 </html>

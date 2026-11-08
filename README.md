@@ -19,7 +19,7 @@ A health worker uploads a microscope image of a Giemsa-stained blood smear. Cell
 | Feature | What it does |
 |---|---|
 | **Single-cell classification** | Labels a cropped red blood cell as *Parasitized* or *Uninfected*, with a confidence score |
-| **Full smear analysis** | Detects every red blood cell in an uncropped smear image and classifies each one |
+| **Full smear analysis** | Finds every red blood cell in a whole smear photo (splits touching cells, skips white blood cells, platelets, debris and cut-off edge cells), classifies all cells in one batch, and boxes each infected cell with its probability |
 | **Parasitemia + risk gauge** | Risk band (Clear, Low, Moderate, High, Critical) driven by parasitemia, the share of infected red cells. A single infected cell is never marked Critical |
 | **Grad-CAM explainability** | Shows a heatmap of the region of each cell that drove the prediction, so a clinician can check it |
 | **Stain normalisation** | Corrects Giemsa colour variation between slides, microscopes and cameras |
@@ -27,6 +27,11 @@ A health worker uploads a microscope image of a Giemsa-stained blood smear. Cell
 | **Patient tracking** | Logs each visit and charts parasitemia over time during treatment |
 | **PDF reports** | Per-visit or per-patient reports with images, results, village and health worker, and confirm-and-refer next steps (no drug doses: species can't be identified from this screen) |
 | **Referral flagging** | High and Critical results are flagged for referral to a doctor or PHC |
+| **Telugu / Hindi / English** | One-tap language switch for ASHA workers. Next-step guidance and WhatsApp messages are translated too |
+| **Village, ASHA and GPS capture** | Each test records where it happened and who did it. Village and worker are remembered between patients |
+| **What to do next** | Plain-language steps for each risk level, a WhatsApp referral message for the PHC, and a 108 ambulance button for Critical results |
+| **Outbreak map** | Village hotspots on a map (with an offline table fallback) and a list of patients to refer |
+| **Works on poor connections** | Photos shrink in the browser before upload; results are capped at 1280 px; the app shell opens offline (service worker) and can be installed on a phone's home screen |
 | **Outbreak surveillance API** | Groups recent tests by village and flags hotspots (≥3 positives in 14 days) for district health officers |
 
 ## How it works
@@ -66,6 +71,23 @@ Stain normalisation
 | F1 score | `<F1>` |
 
 > For screening, **sensitivity matters most**: a missed infection is worse than a false alarm that is later checked by RDT.
+
+## Full-smear pipeline
+
+The model is a **single-cell classifier** (NIH crops: one cell on a black background). Whole smears are handled by `rbc_detection.py`:
+
+1. Green channel + Otsu threshold (works on light or dark backgrounds), with holes filled so pale cell centres don't split cells
+2. Estimates the typical cell radius **from each image**, so it adapts to any magnification or phone adapter
+3. Distance-transform seeds; each pixel is assigned to its nearest seed, which splits touching and overlapping cells
+4. Rejects regions by size relative to the median cell (platelets, specks, white blood cells, clumps), by roundness (debris), and cells cut off at the edge
+5. Crops each cell to its own size and masks the background to black, **matching the training data**. The old fixed 128 px crop could hold several cells or only part of one
+6. Classifies all cells in batches of 64 (about 10x faster than one call per cell), then computes parasitemia and the risk band
+
+**Validation:** `tools/evaluate_smears.py` measures detection recall/precision, cell-level sensitivity/specificity, parasitemia error and image-level accuracy against **BBBC041**, a public set of 1,364 expert-labelled full-smear images ([download](https://bbbc.broadinstitute.org/BBBC041)):
+
+```bash
+python tools/evaluate_smears.py --data malaria --split test
+```
 
 ## Risk bands
 
@@ -132,6 +154,10 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 app.py               Flask routes, inference, risk scoring
 db.py                SQLite data layer, outbreak and referral queries
 crypto_util.py       Field-level encryption at rest
+static/js/rural.js   Languages, village/GPS capture, upload compression, next steps, outbreak map
+static/sw.js         Offline app shell (patient data is never cached)
+tools/evaluate_smears.py  Full-smear evaluation on BBBC041
+tools/convert_tflite.py   ~3 MB quantised model for phones / Raspberry Pi
 train_model.py       Training script (retrains malaria_model.keras)
 malaria_model.keras  Pretrained model
 class_indices.json   Label mapping
@@ -184,12 +210,11 @@ The repo includes `render.yaml`, `.python-version` and pinned `requirements.txt`
 
 | Planned feature | Why it matters in rural settings |
 |---|---|
-| **Phone capture** with a low-cost clip-on microscope lens | Removes the need for a lab microscope and camera setup |
-| **On-device inference** (TFLite) and offline mode | Works where internet access is patchy or unavailable |
-| **Telugu and Hindi interface and reports** | Usable by ASHA workers and readable by patients |
-| **GPS-tagged cases and an outbreak map** | Lets district health officials see village-level case clusters early |
-| **Doctor referral** for high-risk results | Remote confirmation and treatment advice from a doctor |
+| **Phone capture** with a low-cost clip-on microscope lens, validated with `evaluate_smears.py` | Removes the need for a lab microscope and camera setup |
+| **Fully offline Android app** using `tools/convert_tflite.py` (model already convertible to ~3 MB) | Screening with no internet at all |
 | **Multi-tenant accounts** (PHC / NGO / district) | Keeps each organisation's patient data separate (built, not yet deployed) |
+| **Species identification** (P. falciparum vs P. vivax) | Treatment in India depends on species |
+| **Offline queue**: save tests with no signal, sync later | Remote villages with no coverage |
 
 ## Limitations
 

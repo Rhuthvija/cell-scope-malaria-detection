@@ -30,6 +30,9 @@ import stain_norm
 from crypto_util import encryption_enabled
 
 IMG_SIZE = 128
+# Per-cell probability above which a cell counts as parasitized in smear mode.
+# Re-tune on held-out data (see metrics.json / evaluate_smears.py).
+CELL_THRESHOLD = float(os.environ.get("CELLSCOPE_CELL_THRESHOLD", "0.5"))
 MODEL_PATH = "malaria_model.keras"
 CLASS_INDICES_PATH = "class_indices.json"
 
@@ -108,9 +111,9 @@ def _security_headers(resp):
         "Content-Security-Policy",
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
         "font-src 'self' https://fonts.gstatic.com data:; "
-        "img-src 'self' data: blob:; "
+        "img-src 'self' data: blob: https://*.tile.openstreetmap.org; "
         "connect-src 'self'; "
         "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     )
@@ -268,6 +271,49 @@ def classify_rgb(rgb_image: np.ndarray, filename: str = "sample") -> float:
         prob_parasitized = float(np.clip(prob, 0.01, 0.99))
         print(f"[DEBUG INFERENCE] Fallback='GiemsaMorphology' file='{filename}' signal_ratio={signal_ratio:.5f} -> prob_parasitized={prob_parasitized:.4f}")
         return prob_parasitized
+
+def _probs_from_raw(raw_pred: np.ndarray) -> np.ndarray:
+    """Convert model outputs to P(parasitized) using class_indices.json."""
+    if raw_pred.shape[-1] == 1:
+        raw = raw_pred[:, 0].astype(np.float64)
+        probs = 1.0 - raw if CLASS_INDICES.get("Uninfected") == 1 else raw
+    else:
+        probs = raw_pred[:, CLASS_INDICES.get("Parasitized", 0)].astype(np.float64)
+    return np.clip(probs, 0.01, 0.99)
+
+
+def classify_batch(crops: list) -> list:
+    """Classify many cell crops in ONE model call (vs one call per cell before).
+    On a CPU-only server this is roughly 10x faster for a smear with a few
+    hundred cells, which matters on Render's free tier and on low-end clinic PCs."""
+    if not crops:
+        return []
+    try:
+        model = get_model()
+        probs = []
+        # Chunks of 64 keep peak memory ~12 MB instead of ~150 MB for a dense
+        # smear (Render's free tier has 512 MB in total).
+        for i in range(0, len(crops), 64):
+            batch = np.concatenate([preprocess_for_model(c) for c in crops[i:i + 64]], axis=0)
+            raw = np.asarray(model(batch, training=False))
+            probs.extend(float(p) for p in _probs_from_raw(raw))
+        return probs
+    except Exception:
+        # classify_rgb raises unless the demo heuristic is explicitly enabled.
+        return [classify_rgb(c, filename="crop") for c in crops]
+
+
+def downscale_for_display(rgb_image: np.ndarray, max_side: int = 1280) -> np.ndarray:
+    """Phone photos can be 12+ MP. Stored and returned images are capped so the
+    database stays small and results load quickly on slow rural connections.
+    (Analysis always runs on the full-resolution image.)"""
+    h, w = rgb_image.shape[:2]
+    scale = max_side / float(max(h, w))
+    if scale >= 1.0:
+        return rgb_image
+    import cv2
+    return cv2.resize(rgb_image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
 
 def run_self_test():
     """Runs automated inference self-test on known parasitized and uninfected sample images."""
@@ -553,7 +599,7 @@ def api_diagnose():
     # 1. Model Inference
     try:
         if mode == "smear":
-            cells = rbc_detection.detect_cells(rgb_image)
+            cells, detection_stats = rbc_detection.detect_cells(rgb_image, return_stats=True)
             if not cells:
                 # Never invent a result: if segmentation finds no cells, say so.
                 return jsonify({
@@ -561,14 +607,26 @@ def api_diagnose():
                     "error": "No red blood cells were detected in this image. Check focus and "
                              "magnification, or use single-cell mode with a cropped cell image."
                 }), 422
-            cell_probs = [classify_rgb(c.crop, filename=f"crop_{c.centroid}") for c in cells]
+            cell_probs = classify_batch([c.crop for c in cells])
             cells_analyzed = len(cells)
-            cells_parasitized = sum(1 for p in cell_probs if p >= 0.5)
+            cell_labels = [p >= CELL_THRESHOLD for p in cell_probs]
+            cells_parasitized = int(sum(cell_labels))
             parasitemia_pct = round((cells_parasitized / cells_analyzed) * 100, 2)
             # A smear is positive if ANY cell is parasitized, not only when most cells are.
             # The most suspicious cell's probability drives the smear-level label and confidence;
             # parasitemia_pct (share of infected cells) still drives the risk band.
             prob_parasitized = max(cell_probs)
+            if cells_parasitized == 0:
+                # No cell crossed the threshold: report confidence in "uninfected"
+                # from the most suspicious cell, so it can't exceed what that cell supports.
+                prob_parasitized = min(prob_parasitized, CELL_THRESHOLD - 0.01)
+            smear_info = {
+                "cells_detected": cells_analyzed,
+                "cells_parasitized": cells_parasitized,
+                "suspicious_cells": int(sum(1 for p in cell_probs if 0.3 <= p < CELL_THRESHOLD)),
+                "cell_threshold": CELL_THRESHOLD,
+                "detection": detection_stats,
+            }
         else:
             prob_parasitized = classify_rgb(rgb_image, filename=filename)
             cells_analyzed = 1
@@ -578,13 +636,26 @@ def api_diagnose():
     except RuntimeError as err:
         return jsonify({"success": False, "error": str(err)}), 503
 
-    is_parasitized = (prob_parasitized >= 0.5)
+    if mode == "smear":
+        is_parasitized = cells_parasitized > 0
+    else:
+        is_parasitized = (prob_parasitized >= 0.5)
     label = "Parasitized" if is_parasitized else "Uninfected"
     confidence_score = round((prob_parasitized if is_parasitized else (1.0 - prob_parasitized)) * 100, 1)
+    confidence_score = max(confidence_score, 50.0)
 
     # 2. Generate Explainability Heatmap & Base64 Images
-    image_b64 = image_to_base64(rgb_image)
-    heatmap_b64 = generate_gradcam_overlay(rgb_image, prob_parasitized=prob_parasitized)
+    if mode == "smear":
+        # For a whole smear, the explainability view is the smear itself with
+        # every infected cell boxed (and its probability), every clear cell
+        # outlined -- a health worker can check each flagged cell by eye.
+        annotated = rbc_detection.draw_annotations(rgb_image, cells, cell_labels, cell_probs)
+        image_b64 = image_to_base64(downscale_for_display(rgb_image))
+        heatmap_b64 = image_to_base64(downscale_for_display(annotated))
+    else:
+        smear_info = None
+        image_b64 = image_to_base64(downscale_for_display(rgb_image))
+        heatmap_b64 = generate_gradcam_overlay(rgb_image, prob_parasitized=prob_parasitized)
 
     print(f"[DIAGNOSIS COMPLETE] Mode='{mode}' Result='{label}' Conf={confidence_score}% Parasitemia={parasitemia_pct}")
 
@@ -635,6 +706,7 @@ def api_diagnose():
             "needle_angle": risk_info["needle_angle"],
             "risk_tagline": risk_info["tagline"],
             "refer": risk_info["refer"],
+            "smear": smear_info,
             "mode": mode,
             "cells_analyzed": cells_analyzed,
             "cells_parasitized": cells_parasitized,
@@ -856,6 +928,14 @@ def api_referrals():
     except ValueError:
         return jsonify({"error": "days must be an integer"}), 400
     return jsonify(db.get_referrals(days=days))
+
+
+@app.route("/sw.js")
+def service_worker():
+    """Served from the site root so the offline cache covers the whole app."""
+    resp = send_file(os.path.join(app.static_folder, "sw.js"), mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @app.route("/health")

@@ -151,7 +151,7 @@ function switchTab(tabId) {
   }
   activeTab = tabId;
 
-  const navItems = ['home', 'diagnosis', 'tracking', 'analytics'];
+  const navItems = ['home', 'diagnosis', 'tracking', 'analytics', 'outbreaks'];
   navItems.forEach((item) => {
     const navEl = document.getElementById(`nav-${item}`);
     const pageEl = document.getElementById(`page-${item}`);
@@ -170,6 +170,7 @@ function switchTab(tabId) {
   // A hidden canvas must not keep an RAF loop alive. Restarting after the
   // section becomes visible resets it to the same designed opening layout.
   if (tabId === 'home') heroAnimationController?.start({ reset: true });
+  if (tabId === 'outbreaks' && typeof loadOutbreaks === 'function') loadOutbreaks();
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -751,7 +752,12 @@ async function runDiagnostics() {
   formData.append('gender', gender);
   formData.append('phone', phone);
   formData.append('mode', currentUploadMode);
-  formData.append('image', currentFile);
+  // Rural fields (village, district, ASHA worker, GPS) from rural.js
+  if (typeof appendRuralFields === 'function') appendRuralFields(formData);
+  // Shrink large phone photos before upload so it works on slow 2G/3G links
+  const uploadFile = (typeof compressForUpload === 'function')
+    ? await compressForUpload(currentFile, currentUploadMode) : currentFile;
+  formData.append('image', uploadFile);
 
   try {
     const res = await fetch('/api/diagnose', { method: 'POST', body: formData });
@@ -777,6 +783,7 @@ async function runDiagnostics() {
       if (loaderOverlay) loaderOverlay.style.display = 'none';
       renderDiagnosisResult(data.diagnosis, data.patient);
       showQualityWarning(data.quality);
+      if (typeof showRuralResult === 'function') showRuralResult(data);
       loadPatientRecordsFromDB();
       loadAnalyticsFromDB();
     }, 300);
@@ -812,13 +819,17 @@ function renderDiagnosisResult(diag, patient) {
   confPctEl.textContent = `${diag.confidence_score}%`;
   
   if (isPositive) {
-    verdictTitleEl.textContent = `PARASITIZED (P. falciparum-consistent)`;
+    verdictTitleEl.textContent = `PARASITIZED (Malaria parasites detected)`;
     verdictTitleEl.style.color = 'var(--c-pink-light)';
-    verdictDescEl.textContent = `Intracellular ring trophozoites identified. Parasitemia rate: ${diag.parasitemia_pct}%.`;
+    verdictDescEl.textContent = (diag.mode === 'smear' && diag.smear)
+      ? `${diag.smear.cells_parasitized} of ${diag.smear.cells_detected} red blood cells infected. Parasitemia: ${diag.parasitemia_pct}%. Confirm species with RDT / microscopy.`
+      : `Infected cell detected. Confirm with RDT or a full smear; species can't be identified from this screen.`;
   } else {
     verdictTitleEl.textContent = `UNINFECTED (Clear Erythrocyte)`;
     verdictTitleEl.style.color = 'var(--c-green-light)';
-    verdictDescEl.textContent = `No intracellular Plasmodium parasites or ring forms detected in this sample.`;
+    verdictDescEl.textContent = (diag.mode === 'smear' && diag.smear)
+      ? `No parasites found in ${diag.smear.cells_detected} red blood cells analysed.`
+      : `No intracellular Plasmodium parasites or ring forms detected in this sample.`;
   }
 
   // Side-by-side Images
@@ -1056,15 +1067,15 @@ function populateReportModalWithVisitData(visit) {
   const rxContent = document.getElementById('rep-rx-content');
   if (isPositive) {
     rxContent.innerHTML = `
-      • <strong>Chemotherapy:</strong> Artemether-Lumefantrine (Coartem 80/480mg) 6-dose oral course.<br>
-      • <strong>Supportive Care:</strong> Paracetamol 500mg as needed for pyrexia; oral/IV fluid rehydration.<br>
-      • <strong>Clinical Protocol:</strong> Repeat Giemsa blood smear in 48-72 hours to verify clearance.
+      • <strong>Confirm:</strong> RDT or trained microscopist today, to identify the species.<br>
+      • <strong>Treat:</strong> As per NCVBDC national guidelines through the ASHA worker / PHC.<br>
+      • <strong>Refer urgently</strong> if confusion, convulsions, unable to drink, repeated vomiting or dark urine.
     `;
   } else {
     rxContent.innerHTML = `
-      • <strong>Chemotherapy:</strong> No antimalarial chemotherapy indicated.<br>
-      • <strong>Supportive Care:</strong> Standard rest, hydration, and symptomatic care if non-malarial fever occurs.<br>
-      • <strong>Protocol:</strong> Routine follow-up if symptoms persist.
+      • <strong>No antimalarial treatment</strong> based on this screen.<br>
+      • <strong>Re-test</strong> after 24 hours or confirm with an RDT if fever continues.<br>
+      • <strong>Look for other causes</strong> of fever (dengue, typhoid) if symptoms persist.
     `;
   }
 
@@ -1469,4 +1480,6 @@ function showQualityWarning(quality) {
     document.body.appendChild(box);
   }
   box.textContent = '⚠ Image quality: ' + quality.issues.join(' ') + ' The result may be unreliable.';
+  clearTimeout(box._hideTimer);
+  box._hideTimer = setTimeout(() => box.remove(), 12000);
 }
