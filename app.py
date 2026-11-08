@@ -206,12 +206,15 @@ def run_self_test():
         }
     }
 
-# Run startup self-test
+# Warm up at startup: load the model and run one dummy prediction so the first
+# real request isn't slowed by TensorFlow initialisation. (The synthetic-shape
+# self-test is still available at /api/diagnose/selftest, but drawn circles are
+# not real cells, so it is a smoke test, not a measure of accuracy.)
 try:
-    _st = run_self_test()
-    print(f"[STARTUP SELF-TEST] All passed: {_st['all_passed']} (Uninfected={_st['uninfected_test']['predicted']}, Parasitized={_st['parasitized_test']['predicted']})")
+    get_model().predict(np.zeros((1, IMG_SIZE, IMG_SIZE, 3), dtype=np.float32), verbose=0)
+    print("[STARTUP] Model loaded and warmed up.")
 except Exception as _e:
-    print(f"[STARTUP SELF-TEST] Error: {_e}")
+    print(f"[STARTUP] Model warm-up failed: {_e}")
 
 def generate_gradcam_overlay(rgb_image: np.ndarray, prob_parasitized: float = None) -> str:
     """
@@ -428,17 +431,16 @@ def api_diagnose():
         image_bytes = file.read()
         rgb_image = load_rgb(image_bytes)
     else:
-        sample_type = request.form.get("sample_type", "parasitized")
-        filename = f"sample_{sample_type}.png"
-        import cv2
-        rgb_image = np.zeros((128, 128, 3), dtype=np.uint8)
-        if sample_type == "uninfected":
-            cv2.circle(rgb_image, (64, 64), 45, (16, 185, 129), -1)
-            cv2.circle(rgb_image, (64, 64), 20, (160, 240, 200), -1)
-        else:
-            cv2.circle(rgb_image, (64, 64), 45, (236, 72, 153), -1)
-            cv2.circle(rgb_image, (55, 55), 10, (124, 58, 237), 2)
-            cv2.circle(rgb_image, (62, 50), 3, (244, 63, 94), -1)
+        # Never diagnose a made-up image and save it to a patient record.
+        return jsonify({"success": False, "error": "Please upload a blood smear image."}), 400
+
+    # 0. Image quality check (blur / too dark / overexposed). Reported as a
+    # warning rather than a hard block, because NIH-style single-cell crops have
+    # dark backgrounds that can trip the brightness threshold.
+    try:
+        quality = quality_check.check_image_quality(rgb_image)
+    except Exception as err:
+        quality = {"ok": True, "issues": [], "metrics": {}, "error": str(err)}
 
     # 1. Model Inference
     try:
@@ -503,6 +505,7 @@ def api_diagnose():
     return jsonify({
         "success": True,
         "message": "Diagnosis evaluated and saved to patient record.",
+        "quality": quality,
         "patient": patient,
         "diagnosis": {
             "visit_id": visit_id,
@@ -716,5 +719,8 @@ def health():
     return jsonify({"model_loaded": os.path.exists(MODEL_PATH), "status": "active"})
 
 if __name__ == "__main__":
-    print("CELL SCOPE Server running on http://0.0.0.0:5050")
-    app.run(debug=True, host="0.0.0.0", port=5050)
+    # Render (and most hosts) assign the port through $PORT; 5050 is the local default.
+    port = int(os.environ.get("PORT", 5050))
+    debug = os.environ.get("FLASK_DEBUG") == "1"
+    print(f"CELL SCOPE Server running on http://0.0.0.0:{port}")
+    app.run(debug=debug, host="0.0.0.0", port=port)

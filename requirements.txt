@@ -1,8 +1,13 @@
-tensorflow>=2.15,<2.17
+# Runtime (Render / local). Python 3.11 — see .python-version.
+# The bundled malaria_model.keras was saved with Keras 3.13, so it needs
+# TensorFlow 2.16+ with Keras 3 (TF 2.15 ships Keras 2 and cannot load it).
+# tensorflow-cpu skips GPU libraries: smaller install, less RAM on Render's free tier.
+tensorflow-cpu==2.19.0
+keras==3.13.2
 flask>=3.0
 pillow>=10.0
 matplotlib>=3.7
 opencv-python-headless>=4.8
 reportlab>=4.0
-numpy>=1.24
-gunicorn
+numpy>=1.24,<2.2
+gunicorn>=22.0

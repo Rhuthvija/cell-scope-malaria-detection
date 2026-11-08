@@ -776,6 +776,7 @@ async function runDiagnostics() {
     setTimeout(() => {
       if (loaderOverlay) loaderOverlay.style.display = 'none';
       renderDiagnosisResult(data.diagnosis, data.patient);
+      showQualityWarning(data.quality);
       loadPatientRecordsFromDB();
       loadAnalyticsFromDB();
     }, 300);
@@ -1448,4 +1449,24 @@ function renderRatioBarChart(positive, negative) {
       }
     }
   });
+}
+
+// Non-blocking image-quality warning (blurry / too dark / overexposed uploads).
+function showQualityWarning(quality) {
+  let box = document.getElementById('quality-warning');
+  if (!quality || quality.ok || !quality.issues || !quality.issues.length) {
+    if (box) box.remove();
+    return;
+  }
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'quality-warning';
+    box.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);max-width:560px;' +
+      'background:#FFF7E6;border:1px solid #D9A441;color:#8A6116;border-radius:8px;padding:12px 16px;' +
+      'font-size:0.9rem;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,0.25);cursor:pointer;';
+    box.title = 'Click to dismiss';
+    box.addEventListener('click', () => box.remove());
+    document.body.appendChild(box);
+  }
+  box.textContent = '⚠ Image quality: ' + quality.issues.join(' ') + ' The result may be unreliable.';
 }

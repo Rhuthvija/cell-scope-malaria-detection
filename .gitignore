@@ -12,3 +12,6 @@ cellscope.db
 .DS_Store
 training_history.png
 *.log
+
+# Training outputs
+cell_images/
