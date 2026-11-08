@@ -13,3 +13,7 @@ services:
         value: 3.11.9
       - key: TF_CPP_MIN_LOG_LEVEL
         value: "2"
+      - key: CELLSCOPE_ENCRYPTION_KEY
+        sync: false          # set the real key in the Render dashboard, never in git
+      - key: CELLSCOPE_DEMO_DATA
+        value: "1"

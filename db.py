@@ -10,6 +10,8 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from crypto_util import decrypt_row, encrypt
+
 DB_PATH = "cellscope.db"
 
 SCHEMA = """
@@ -39,6 +41,12 @@ CREATE TABLE IF NOT EXISTS visits (
     tier TEXT DEFAULT 'Screening Result',
     image_data TEXT,
     heatmap_data TEXT,
+    village TEXT DEFAULT '',
+    district TEXT DEFAULT '',
+    health_worker TEXT DEFAULT '',
+    latitude REAL,
+    longitude REAL,
+    referred INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     FOREIGN KEY (patient_id) REFERENCES patients (id)
 );
@@ -55,41 +63,11 @@ def get_conn():
         if not tbl_check:
             conn.executescript(SCHEMA)
 
-            # Demo/seed data is only inserted for local development so the UI
-            # isn't empty while testing. Render sets RENDER=true automatically
-            # on every deploy, so production databases start empty.
-            if not os.environ.get("RENDER"):
-                now_iso = datetime.now(timezone.utc).isoformat()
-
-                cur1 = conn.execute(
-                    "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("Vennela Indukuri", "CS-9042", 28, "Female", "+1 (555) 019-2834", now_iso)
-                )
-                p1_id = cur1.lastrowid
-                conn.execute(
-                    "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (p1_id, "2026-08-01", "Parasitized", 94.2, "High risk", "Parasitemia detected. Medical evaluation advised.", 120, 8, 6.67, 3.4, 12.6, "High Parasitemia Level", now_iso)
-                )
-
-                cur2 = conn.execute(
-                    "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("Amina Diallo", "CS-7721", 27, "Female", "+1 (555) 048-9921", now_iso)
-                )
-                p2_id = cur2.lastrowid
-                conn.execute(
-                    "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (p2_id, "2026-08-02", "Parasitized", 96.8, "Critical risk", "🚨 Immediately consult a doctor", 150, 12, 8.0, 4.6, 13.5, "High Parasitemia Level", now_iso)
-                )
-
-                cur3 = conn.execute(
-                    "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    ("Elena Rostova", "CS-3108", 45, "Female", "+1 (555) 032-1104", now_iso)
-                )
-                p3_id = cur3.lastrowid
-                conn.execute(
-                    "INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline, cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (p3_id, "2026-08-12", "Uninfected", 99.4, "Negative / Clear", "Clean sample. Routine follow-up only.", 110, 0, 0.0, 0.0, 3.3, "No Malaria Parasites Detected", now_iso)
-                )
+            # Demo data so the dashboard and outbreak map aren't empty. Skipped on
+            # Render (RENDER=true is set automatically) unless CELLSCOPE_DEMO_DATA=1,
+            # which is handy for a live presentation.
+            if not os.environ.get("RENDER") or os.environ.get("CELLSCOPE_DEMO_DATA") == "1":
+                _seed_demo_data(conn)
 
         yield conn
         conn.commit()
@@ -112,7 +90,13 @@ def init_db():
             "ALTER TABLE visits ADD COLUMN risk_band TEXT DEFAULT 'Low risk'",
             "ALTER TABLE visits ADD COLUMN risk_tagline TEXT DEFAULT 'Low risk — monitor for symptoms'",
             "ALTER TABLE visits ADD COLUMN image_data TEXT",
-            "ALTER TABLE visits ADD COLUMN heatmap_data TEXT"
+            "ALTER TABLE visits ADD COLUMN heatmap_data TEXT",
+            "ALTER TABLE visits ADD COLUMN village TEXT DEFAULT ''",
+            "ALTER TABLE visits ADD COLUMN district TEXT DEFAULT ''",
+            "ALTER TABLE visits ADD COLUMN health_worker TEXT DEFAULT ''",
+            "ALTER TABLE visits ADD COLUMN latitude REAL",
+            "ALTER TABLE visits ADD COLUMN longitude REAL",
+            "ALTER TABLE visits ADD COLUMN referred INTEGER DEFAULT 0",
         ]:
             try:
                 conn.execute(col_def)
@@ -154,7 +138,7 @@ def create_or_get_patient(name: str, patient_code: str = None, age: int = 30, ge
         if row:
             conn.execute(
                 "UPDATE patients SET name = ?, age = ?, gender = ?, phone = ? WHERE id = ?",
-                (name_clean, int(age or 30), gender or "Male", phone or "", row["id"])
+                (name_clean, int(age or 30), gender or "Male", encrypt(phone or ""), row["id"])
             )
             return row["id"]
 
@@ -165,7 +149,7 @@ def create_or_get_patient(name: str, patient_code: str = None, age: int = 30, ge
         cur = conn.execute(
             """INSERT INTO patients (name, patient_code, age, gender, phone, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (name_clean, patient_code, int(age or 30), gender or "Male", phone or "", datetime.now(timezone.utc).isoformat()),
+            (name_clean, patient_code, int(age or 30), gender or "Male", encrypt(phone or ""), datetime.now(timezone.utc).isoformat()),
         )
         return cur.lastrowid
 
@@ -179,13 +163,13 @@ def list_patients():
             GROUP BY p.id
             ORDER BY p.created_at DESC
         """).fetchall()
-        return [dict(r) for r in rows]
+        return [decrypt_row(dict(r)) for r in rows]
 
 
 def get_patient(patient_id: int):
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
-        return dict(row) if row else None
+        return decrypt_row(dict(row)) if row else None
 
 
 def get_patient_by_code(patient_code: str):
@@ -193,10 +177,11 @@ def get_patient_by_code(patient_code: str):
         return None
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM patients WHERE patient_code = ?", (patient_code.strip(),)).fetchone()
-        return dict(row) if row else None
+        return decrypt_row(dict(row)) if row else None
 
 
-def add_visit(patient_id: int, visit_date: str, cells_analyzed: int, cells_parasitized: int, diagnosis_result: str = None, confidence_score: float = 95.0, risk_band: str = "Low risk", risk_tagline: str = "", image_data: str = None, heatmap_data: str = None):
+def add_visit(patient_id: int, visit_date: str, cells_analyzed: int, cells_parasitized: int, diagnosis_result: str = None, confidence_score: float = 95.0, risk_band: str = "Low risk", risk_tagline: str = "", image_data: str = None, heatmap_data: str = None,
+              village: str = "", district: str = "", health_worker: str = "", latitude: float = None, longitude: float = None, referred: bool = False):
     pct = round((cells_parasitized / cells_analyzed) * 100, 2) if cells_analyzed else 0.0
     ci_low, ci_high = wilson_confidence_interval(cells_parasitized, cells_analyzed)
     tier = parasitemia_tier(pct)
@@ -207,11 +192,14 @@ def add_visit(patient_id: int, visit_date: str, cells_analyzed: int, cells_paras
         cur = conn.execute(
             """INSERT INTO visits
                (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline,
-                cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, image_data, heatmap_data, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, image_data, heatmap_data,
+                village, district, health_worker, latitude, longitude, referred, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 patient_id, visit_date, diagnosis_result, float(confidence_score), risk_band, risk_tagline,
-                cells_analyzed, cells_parasitized, pct, ci_low, ci_high, tier, image_data, heatmap_data, datetime.now(timezone.utc).isoformat(),
+                cells_analyzed, cells_parasitized, pct, ci_low, ci_high, tier, encrypt(image_data), encrypt(heatmap_data),
+                (village or "").strip(), (district or "").strip(), (health_worker or "").strip(),
+                latitude, longitude, 1 if referred else 0, datetime.now(timezone.utc).isoformat(),
             ),
         )
         return cur.lastrowid
@@ -223,7 +211,7 @@ def list_visits(patient_id: int):
             "SELECT * FROM visits WHERE patient_id = ? ORDER BY visit_date ASC, created_at ASC",
             (patient_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [decrypt_row(dict(r)) for r in rows]
 
 
 def get_visit_by_id(visit_id: int):
@@ -241,7 +229,7 @@ def get_visit_by_id(visit_id: int):
         WHERE v.id = ?
         """
         row = conn.execute(query, (visit_id,)).fetchone()
-        return dict(row) if row else None
+        return decrypt_row(dict(row)) if row else None
 
 
 def get_all_visit_records():
@@ -268,13 +256,17 @@ def get_all_visit_records():
             v.tier,
             v.image_data,
             v.heatmap_data,
+            v.village,
+            v.district,
+            v.health_worker,
+            v.referred,
             v.created_at as visit_created_at
         FROM visits v
         JOIN patients p ON v.patient_id = p.id
         ORDER BY v.visit_date DESC, v.created_at DESC
         """
         rows = conn.execute(query).fetchall()
-        return [dict(r) for r in rows]
+        return [decrypt_row(dict(r)) for r in rows]
 
 
 def get_all_records_with_latest_visit():
@@ -301,7 +293,7 @@ def get_analytics_dataset():
         ORDER BY v.visit_date ASC
         """
         rows = conn.execute(query).fetchall()
-        data = [dict(r) for r in rows]
+        data = [decrypt_row(dict(r)) for r in rows]
 
         total_visits = len(data)
         positive_cases = sum(1 for r in data if r["diagnosis_result"] in ["Parasitized", "Malaria Detected"])
@@ -353,3 +345,123 @@ def treatment_response(visits: list) -> str:
     if delta > 0:
         return f"Parasitemia increased by {delta:.1f} percentage points since last visit."
     return "Parasitemia level stable since last visit."
+
+
+# ---------------------------------------------------------------------------
+# Rural surveillance: outbreak clusters and referrals
+# ---------------------------------------------------------------------------
+def get_outbreak_summary(days: int = 14, hotspot_min_positive: int = 3):
+    """Group recent tests by village. A village is a hotspot when it has at least
+    `hotspot_min_positive` positive tests in the window -- a simple, explainable
+    rule a district health officer can act on."""
+    from datetime import timedelta
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(village), ''), 'Unknown') AS village,
+                   COALESCE(NULLIF(TRIM(district), ''), '') AS district,
+                   COUNT(*) AS tests,
+                   SUM(CASE WHEN diagnosis_result = 'Parasitized' THEN 1 ELSE 0 END) AS positives,
+                   SUM(CASE WHEN referred = 1 THEN 1 ELSE 0 END) AS referrals,
+                   AVG(latitude) AS lat,
+                   AVG(longitude) AS lon,
+                   MAX(visit_date) AS last_test
+            FROM visits
+            WHERE visit_date >= ?
+            GROUP BY 1, 2
+            ORDER BY positives DESC, tests DESC
+            """,
+            (since,),
+        ).fetchall()
+
+    villages = []
+    for r in rows:
+        d = dict(r)
+        d["positivity_pct"] = round(100.0 * d["positives"] / d["tests"], 1) if d["tests"] else 0.0
+        d["hotspot"] = d["positives"] >= hotspot_min_positive
+        d["lat"] = round(d["lat"], 5) if d["lat"] is not None else None
+        d["lon"] = round(d["lon"], 5) if d["lon"] is not None else None
+        villages.append(d)
+
+    return {
+        "window_days": days,
+        "since": since,
+        "hotspot_rule": f">= {hotspot_min_positive} positive tests in {days} days",
+        "total_tests": sum(v["tests"] for v in villages),
+        "total_positives": sum(v["positives"] for v in villages),
+        "hotspots": [v for v in villages if v["hotspot"]],
+        "villages": villages,
+    }
+
+
+def get_referrals(days: int = 30):
+    """Patients flagged for referral (High / Critical risk), newest first."""
+    from datetime import timedelta
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT v.id AS visit_id, v.visit_date, v.risk_band, v.parasitemia_pct,
+                   v.village, v.district, v.health_worker,
+                   p.id AS patient_id, p.name, p.patient_code, p.age, p.gender, p.phone
+            FROM visits v JOIN patients p ON v.patient_id = p.id
+            WHERE v.referred = 1 AND v.visit_date >= ?
+            ORDER BY v.visit_date DESC, v.created_at DESC
+            """,
+            (since,),
+        ).fetchall()
+        return [decrypt_row(dict(r)) for r in rows]
+
+
+# Demo villages in malaria-affected tribal areas of Telangana (approximate coordinates).
+_DEMO_VILLAGES = [
+    ("Charla", "Bhadradri Kothagudem", 17.990, 80.995),
+    ("Dummugudem", "Bhadradri Kothagudem", 17.840, 80.870),
+    ("Bhadrachalam", "Bhadradri Kothagudem", 17.669, 80.893),
+    ("Eturnagaram", "Mulugu", 18.333, 80.430),
+    ("Tadvai", "Mulugu", 18.270, 80.200),
+    ("Utnoor", "Adilabad", 19.367, 78.767),
+]
+
+_DEMO_PATIENTS = [
+    # name, code, age, gender, village index, days ago, result, cells, infected, band, worker
+    ("Lakshmi Sodi", "CS-1001", 32, "Female", 0, 2, "Parasitized", 140, 9, "Critical risk", "ASHA Sunitha"),
+    ("Ramesh Madvi", "CS-1002", 41, "Male", 0, 3, "Parasitized", 120, 4, "High risk", "ASHA Sunitha"),
+    ("Sammakka Kursam", "CS-1003", 26, "Female", 0, 5, "Parasitized", 130, 3, "High risk", "ASHA Sunitha"),
+    ("Venkatesh Payam", "CS-1004", 9, "Male", 0, 6, "Uninfected", 110, 0, "Negative / Clear", "ASHA Sunitha"),
+    ("Kamala Vanka", "CS-1005", 38, "Female", 1, 1, "Parasitized", 125, 3, "High risk", "ASHA Padma"),
+    ("Bhimaiah Sodi", "CS-1006", 55, "Male", 1, 4, "Parasitized", 150, 2, "Moderate risk", "ASHA Padma"),
+    ("Saraswathi Irpa", "CS-1007", 30, "Female", 1, 8, "Parasitized", 118, 5, "High risk", "ASHA Padma"),
+    ("Raju Kunja", "CS-1008", 22, "Male", 2, 3, "Uninfected", 105, 0, "Negative / Clear", "ANM Rani"),
+    ("Pushpa Madakam", "CS-1009", 47, "Female", 2, 9, "Parasitized", 112, 2, "Moderate risk", "ANM Rani"),
+    ("Nagaraju Eesam", "CS-1010", 35, "Male", 3, 2, "Parasitized", 140, 6, "High risk", "ASHA Swaroopa"),
+    ("Jyothi Kalam", "CS-1011", 28, "Female", 3, 10, "Uninfected", 100, 0, "Negative / Clear", "ASHA Swaroopa"),
+    ("Srinu Gonde", "CS-1012", 19, "Male", 4, 6, "Uninfected", 108, 0, "Negative / Clear", "ASHA Laxmi"),
+    ("Anitha Atram", "CS-1013", 24, "Female", 5, 4, "Uninfected", 115, 0, "Negative / Clear", "ASHA Bhagya"),
+]
+
+
+def _seed_demo_data(conn):
+    """Insert clearly-fictional demo patients spread across the last ~10 days."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    for (name, code, age, gender, vi, days_ago, result, cells, infected, band, worker) in _DEMO_PATIENTS:
+        village, district, lat, lon = _DEMO_VILLAGES[vi]
+        cur = conn.execute(
+            "INSERT INTO patients (name, patient_code, age, gender, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, code, age, gender, "", now.isoformat()),
+        )
+        pct = round(100.0 * infected / cells, 2)
+        ci_low, ci_high = wilson_confidence_interval(infected, cells)
+        conn.execute(
+            """INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline,
+                   cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier,
+                   village, district, health_worker, latitude, longitude, referred, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (cur.lastrowid, (now - timedelta(days=days_ago)).strftime("%Y-%m-%d"), result,
+             93.0 if result == "Parasitized" else 97.5, band, "Demo record",
+             cells, infected, pct, ci_low, ci_high, parasitemia_tier(pct),
+             village, district, worker, lat, lon,
+             1 if band in ("High risk", "Critical risk") else 0, now.isoformat()),
+        )

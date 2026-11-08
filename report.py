@@ -91,16 +91,25 @@ def generate_patient_report(patient: dict, visits: list, trend_text: str, out_pa
         story.append(table)
 
         # Prescribed Medicines & Clinical Remedies Section
-        story.append(Paragraph("Clinical Remedies & Suggested Treatment Framework", heading_style))
+        # Next steps. This is a screening tool that cannot tell Plasmodium species
+        # apart, and treatment in India depends on species and local guidelines, so the
+        # report points to confirmation and referral instead of naming drug regimens.
+        story.append(Paragraph("Recommended Next Steps", heading_style))
         latest = visits[-1]
-        pct = latest["parasitemia_pct"]
-        if pct > 5.0:
-            rx_text = "<b>High Parasitemia (>5%):</b> Immediate WHO-recommended Artemisinin-Based Combination Therapy (ACT). Recommended regimen: Oral Artemether-Lumefantrine (Coartem 80/480mg) 6-dose schedule or IV Artesunate under clinical supervision. Continuous fever management, IV hydration, and daily blood smear monitoring."
-        elif pct > 0.0:
-            rx_text = "<b>Moderate/Low Parasitemia (<5%):</b> Standard Oral Artemether-Lumefantrine (Coartem 20/120mg) 6-dose course over 3 days. Supportive therapy: Paracetamol 500mg as needed for pyrexia, oral fluid rehydration, and follow-up thick/thin smear in 48-72 hours."
+        pct = latest["parasitemia_pct"] or 0.0
+        if latest["diagnosis_result"] == "Parasitized" and pct >= 5.0:
+            rx_text = ("<b>High parasite load (&ge;5%):</b> Refer to a doctor or PHC <b>immediately</b>. "
+                       "Check for danger signs (confusion, convulsions, unable to drink, vomiting everything, "
+                       "very weak, dark urine, breathing difficulty). Confirm species with RDT / microscopy; "
+                       "treatment as per NCVBDC national guidelines under medical supervision.")
+        elif latest["diagnosis_result"] == "Parasitized":
+            rx_text = ("<b>Malaria parasites detected:</b> Confirm today with a rapid diagnostic test (RDT) or "
+                       "a trained microscopist to identify the species (P. falciparum / P. vivax). Start treatment "
+                       "as per NCVBDC national guidelines through the ASHA / PHC. Repeat the test if fever continues.")
         else:
-            rx_text = "<b>Uninfected (0% Parasites Detected):</b> No antimalarial chemotherapy indicated. Symptomatic management for non-malarial pyrexia as needed."
-        
+            rx_text = ("<b>No parasites detected:</b> No antimalarial treatment based on this screen. "
+                       "If fever continues, re-test after 24 hours or confirm with an RDT, and look for other causes.")
+
         rx_style = ParagraphStyle("RxCustom", parent=styles["Normal"], textColor=INK, fontSize=9.5, leading=14, spaceBefore=4, spaceAfter=14)
         story.append(Paragraph(rx_text, rx_style))
     else:
@@ -150,7 +159,9 @@ def generate_visit_report(visit: dict, out_path: str):
     meta_data = [
         ["Patient Name:", patient_name, "Patient ID / MRN:", patient_code],
         ["Age / Gender:", f"{age} yrs / {gender}", "Contact Phone:", phone or "N/A"],
-        ["Diagnostic Date:", visit_date, "Analysis Mode:", f"{visit.get('cells_analyzed', 1)} Cell(s) Evaluated"]
+        ["Diagnostic Date:", visit_date, "Analysis Mode:", f"{visit.get('cells_analyzed', 1)} Cell(s) Evaluated"],
+        ["Village / District:", ", ".join(x for x in (visit.get("village"), visit.get("district")) if x) or "N/A",
+         "Health Worker:", visit.get("health_worker") or "N/A"],
     ]
     meta_table = Table(meta_data, colWidths=[1.4 * inch, 2.1 * inch, 1.4 * inch, 2.1 * inch])
     meta_table.setStyle(TableStyle([
@@ -228,18 +239,22 @@ def generate_visit_report(visit: dict, out_path: str):
             pass
 
     # Treatment & Prescription Guidelines
-    story.append(Paragraph("Clinical Treatment & Prescribed Framework", heading_style))
+    # Next steps (no drug regimens: species is unknown from this screen and
+    # treatment must follow NCVBDC national guidelines under medical supervision).
+    story.append(Paragraph("Recommended Next Steps", heading_style))
     if is_positive:
         rx_html = (
-            "• <b>First-Line Chemotherapy:</b> Artemether-Lumefantrine (Coartem 80/480mg) 6-dose oral course.<br/>"
-            "• <b>Supportive Care:</b> Paracetamol 500mg as needed for pyrexia; aggressive oral/IV hydration.<br/>"
-            "• <b>Follow-Up Protocol:</b> Repeat Giemsa thin/thick smear microscopy at 48-72 hours to verify clearance."
+            "&bull; <b>Confirm:</b> Rapid diagnostic test (RDT) or trained microscopist, today, to identify the species.<br/>"
+            "&bull; <b>Treat:</b> As per NCVBDC national guidelines through the ASHA worker / PHC.<br/>"
+            "&bull; <b>Refer urgently</b> if any danger sign: confusion, convulsions, unable to drink, repeated vomiting, "
+            "extreme weakness, dark urine or difficulty breathing.<br/>"
+            "&bull; <b>Follow up:</b> Re-test if fever continues after treatment."
         )
     else:
         rx_html = (
-            "• <b>Chemotherapy:</b> No antimalarial chemotherapy indicated at this time.<br/>"
-            "• <b>Supportive Care:</b> Standard symptomatic care for febrile illness if symptoms persist.<br/>"
-            "• <b>Follow-Up:</b> Re-screen if high fever or chills recur within 7-14 days."
+            "&bull; <b>No antimalarial treatment</b> based on this screen.<br/>"
+            "&bull; <b>Re-test</b> after 24 hours or confirm with an RDT if fever continues.<br/>"
+            "&bull; <b>Look for other causes</b> of fever (dengue, typhoid, etc.) if symptoms persist."
         )
     story.append(Paragraph(rx_html, body_style))
     story.append(Spacer(1, 14))

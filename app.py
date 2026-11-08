@@ -6,18 +6,20 @@ patient database persistence, per-patient analytics, and PDF report downloads.
 """
 
 import base64
+import hmac
+import time
+from collections import defaultdict, deque
 import io
 import json
 import logging
 import os
-import random
 import tempfile
 import traceback
 from datetime import datetime, timezone
 os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp()
 
 import numpy as np
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file
 from PIL import Image
 
 import db
@@ -25,6 +27,7 @@ import quality_check
 import rbc_detection
 import report
 import stain_norm
+from crypto_util import encryption_enabled
 
 IMG_SIZE = 128
 MODEL_PATH = "malaria_model.keras"
@@ -39,6 +42,92 @@ if os.path.exists(CLASS_INDICES_PATH):
         print(f"Warning: Failed to read {CLASS_INDICES_PATH}: {e}")
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+# Uploads: cap request size and pixel count (guards against huge files and
+# "decompression bomb" images that expand to gigabytes in memory).
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("CELLSCOPE_MAX_UPLOAD_MB", "10")) * 1024 * 1024
+Image.MAX_IMAGE_PIXELS = 40_000_000
+ALLOWED_IMAGE_FORMATS = {"PNG", "JPEG", "BMP", "TIFF", "WEBP"}
+
+# Optional access lock: set CELLSCOPE_PASSWORD (and optionally CELLSCOPE_USERNAME,
+# default "cellscope") to require a login for every page and API call. Uses the
+# browser's built-in login prompt, so the app's own UI is unchanged. /health stays
+# open for Render's health checks.
+AUTH_USER = os.environ.get("CELLSCOPE_USERNAME", "cellscope")
+AUTH_PASSWORD = os.environ.get("CELLSCOPE_PASSWORD", "")
+AUTH_EXEMPT = {"/health"}
+
+# Simple per-IP rate limit on diagnosis (expensive: runs the model and writes to
+# the DB). In-memory, which is fine for the single-worker deployment.
+RATE_LIMIT_PER_MIN = int(os.environ.get("CELLSCOPE_RATE_LIMIT_PER_MIN", "30"))
+_rate_hits = defaultdict(deque)
+
+
+def _client_ip() -> str:
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return fwd.split(",")[0].strip() if fwd else (request.remote_addr or "unknown")
+
+
+@app.before_request
+def _require_auth():
+    if not AUTH_PASSWORD or request.path in AUTH_EXEMPT:
+        return None
+    auth = request.authorization
+    if auth and auth.type == "basic" \
+            and hmac.compare_digest(auth.username or "", AUTH_USER) \
+            and hmac.compare_digest(auth.password or "", AUTH_PASSWORD):
+        return None
+    return Response("Login required", 401, {"WWW-Authenticate": 'Basic realm="CELL SCOPE", charset="UTF-8"'})
+
+
+@app.before_request
+def _rate_limit():
+    if request.path != "/api/diagnose" or request.method != "POST" or RATE_LIMIT_PER_MIN <= 0:
+        return None
+    now = time.time()
+    hits = _rate_hits[_client_ip()]
+    while hits and now - hits[0] > 60:
+        hits.popleft()
+    if len(hits) >= RATE_LIMIT_PER_MIN:
+        return jsonify({"success": False, "error": "Too many requests. Please wait a minute and try again."}), 429
+    hits.append(now)
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Permissions-Policy", "camera=(self), geolocation=(self), microphone=()")
+    # Allows only this site plus the CDN/fonts the existing UI already uses.
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com data:; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    )
+    if request.headers.get("X-Forwarded-Proto", request.scheme) == "https":
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    # Patient data must not be cached by browsers or proxies.
+    if request.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.errorhandler(413)
+def _too_large(_err):
+    mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+    return jsonify({"success": False, "error": f"Image is too large (max {mb} MB)."}), 413
+
+
 db.init_db()
 
 _model = None
@@ -60,7 +149,19 @@ def get_model():
     return _model
 
 def load_rgb(image_bytes: bytes) -> np.ndarray:
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    """Decode an upload, accepting only real image formats (content is checked,
+    not the file extension). Raises ValueError for anything else."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.format not in ALLOWED_IMAGE_FORMATS:
+            raise ValueError(f"unsupported format {img.format}")
+        img = img.convert("RGB")
+    except Image.DecompressionBombError as err:
+        raise ValueError("image has too many pixels") from err
+    except ValueError:
+        raise
+    except Exception as err:
+        raise ValueError("not a valid image") from err
     return np.asarray(img)
 
 def preprocess_for_model(rgb_image: np.ndarray, normalize_stain: bool = True) -> np.ndarray:
@@ -309,71 +410,58 @@ def image_to_base64(rgb_image: np.ndarray) -> str:
     Image.fromarray(rgb_image).save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
-def get_risk_band(predicted_class: str, confidence: float, parasitemia_pct: float = 0.0) -> dict:
+def get_risk_band(predicted_class: str, confidence: float, parasitemia_pct: float = 0.0,
+                  mode: str = "single", cells_parasitized: int = 0) -> dict:
     """
-    Pure deterministic risk evaluation function tied directly to model output.
-    Maps predicted class and confidence (0-100) to risk band, exact risk value (0-100),
-    gauge needle angle (-90deg to +90deg), and dynamically selects a tagline from that
-    specific band's fixed pool.
+    Deterministic risk evaluation.
+
+    Severity is driven by PARASITEMIA (share of infected red cells), which is what
+    clinicians use; model confidence only expresses how sure the model is.
+    Earlier versions mapped "confidence >= 85%" straight to Critical, so a single
+    clearly-infected cell was labelled an emergency. Now:
+      * Full smear:  >=5% parasitemia -> Critical, >=2% -> High, otherwise Moderate
+                     (a single, low-confidence positive cell stays Moderate).
+      * Single cell: parasitemia can't be measured from one cell, so a positive is
+                     High (confident) or Moderate (uncertain), never Critical.
     """
     conf = float(np.clip(confidence, 50.0, 100.0))
-    
+
     if predicted_class == "Uninfected":
         if conf >= 90.0:
-            band_key = "clear"
-            band = "Negative / Clear"
-            # Interpolate -85.0 to -60.0 as conf goes from 100 down to 90
-            angle = -85.0 + (100.0 - conf) * 2.5
-            taglines = [
-                "All clear — no parasites detected",
-                "Clean sample. Routine follow-up only.",
-                "No action needed at this time."
-            ]
+            band_key, band = "clear", "Negative / Clear"
+            angle = -85.0 + (100.0 - conf) * 2.5            # -85 .. -60
+            tagline = "No parasites detected. Re-test if fever continues."
         else:
-            band_key = "low"
-            band = "Low risk"
-            # Interpolate -60.0 to -20.0 as conf goes from 90 down to 50
-            angle = -60.0 + (90.0 - conf) * 1.0
-            taglines = [
-                "Low risk — monitor for symptoms",
-                "Mild uncertainty detected. Retest if fever develops.",
-                "Likely clear, but keep an eye on it."
-            ]
-    else:  # Parasitized
-        if parasitemia_pct >= 7.0 or conf >= 85.0:
-            band_key = "critical"
-            band = "Critical risk"
-            # Interpolate +56.0 to +86.0 as conf goes from 85 to 100
-            angle = 56.0 + (conf - 85.0) * 2.0
-            taglines = [
-                "🚨 Immediately consult a doctor",
-                "Critical — seek emergency care now",
-                "High parasite burden detected. Urgent medical attention required."
-            ]
-        elif parasitemia_pct >= 2.5 or conf >= 65.0:
-            band_key = "high"
-            band = "High risk"
-            # Interpolate +18.0 to +54.0 as conf goes from 65 to 85
-            angle = 18.0 + (conf - 65.0) * 1.8
-            taglines = [
-                "High risk — consult a physician promptly",
-                "Parasitemia detected. Medical evaluation advised.",
-                "Don't wait — get this checked today."
-            ]
+            band_key, band = "low", "Low risk"
+            angle = -60.0 + (90.0 - conf) * 1.0             # -60 .. -20
+            tagline = "Likely clear, but uncertain. Confirm with RDT if fever is present."
+    elif mode == "smear":
+        weak_single = cells_parasitized <= 1 and conf < 90.0
+        if parasitemia_pct >= 5.0 and not weak_single:
+            band_key, band = "critical", "Critical risk"
+            angle = 60.0 + min(parasitemia_pct - 5.0, 13.0) * 2.0   # 60 .. 86
+            tagline = "High parasite load. Refer to a doctor / PHC immediately."
+        elif parasitemia_pct >= 2.0 and not weak_single:
+            band_key, band = "high", "High risk"
+            angle = 20.0 + (parasitemia_pct - 2.0) * 12.0           # 20 .. 56
+            tagline = "Malaria parasites detected. Confirm with RDT and start treatment today."
         else:
-            band_key = "moderate"
-            band = "Moderate risk"
-            # Interpolate -15.0 to +15.0 as conf goes from 50 to 65
-            angle = -15.0 + (conf - 50.0) * 2.0
-            taglines = [
-                "Moderate risk — clinical correlation advised",
-                "Recommend retesting within 24–48 hrs.",
-                "Findings inconclusive — confirm with microscopy."
-            ]
+            band_key, band = "moderate", "Moderate risk"
+            angle = -15.0 + (conf - 50.0) * 0.6                     # -15 .. 15
+            tagline = "Few infected cells seen. Confirm with RDT or a trained microscopist."
+    else:  # single cell, Parasitized
+        if conf >= 85.0:
+            band_key, band = "high", "High risk"
+            angle = 20.0 + (conf - 85.0) * 2.0                      # 20 .. 50
+            tagline = "Infected cell detected. Test a full smear or RDT today."
+        else:
+            band_key, band = "moderate", "Moderate risk"
+            angle = -15.0 + (conf - 50.0) * 0.85                    # -15 .. 15
+            tagline = "Possible infection. Confirm with RDT or a full smear."
 
     angle = round(float(np.clip(angle, -88.0, 88.0)), 1)
     risk_val = round((angle + 90.0) / 180.0 * 100.0, 1)
-    tagline = random.choice(taglines)
+    refer = band_key in ("high", "critical")
 
     return {
         "band": band_key,
@@ -382,7 +470,8 @@ def get_risk_band(predicted_class: str, confidence: float, parasitemia_pct: floa
         "confidence": conf,
         "risk_value": risk_val,
         "needle_angle": angle,
-        "tagline": tagline
+        "tagline": tagline,
+        "refer": refer,
     }
 
 compute_risk_assessment = get_risk_band
@@ -422,6 +511,21 @@ def api_diagnose():
     phone = (request.form.get("phone") or "").strip()
     mode = request.form.get("mode") or "single"
 
+    # Rural surveillance fields (all optional)
+    village = (request.form.get("village") or "").strip()[:80]
+    district = (request.form.get("district") or "").strip()[:80]
+    health_worker = (request.form.get("health_worker") or "").strip()[:80]
+
+    def _coord(key, lo, hi):
+        try:
+            v = float(request.form.get(key, ""))
+            return v if lo <= v <= hi else None
+        except (TypeError, ValueError):
+            return None
+
+    latitude = _coord("latitude", -90.0, 90.0)
+    longitude = _coord("longitude", -180.0, 180.0)
+
     # Image upload check
     filename = "unknown"
     
@@ -429,7 +533,11 @@ def api_diagnose():
         file = request.files["image"]
         filename = file.filename
         image_bytes = file.read()
-        rgb_image = load_rgb(image_bytes)
+        try:
+            rgb_image = load_rgb(image_bytes)
+        except ValueError as err:
+            return jsonify({"success": False,
+                            "error": f"Please upload a PNG or JPEG blood smear image ({err})."}), 400
     else:
         # Never diagnose a made-up image and save it to a patient record.
         return jsonify({"success": False, "error": "Please upload a blood smear image."}), 400
@@ -465,7 +573,8 @@ def api_diagnose():
             prob_parasitized = classify_rgb(rgb_image, filename=filename)
             cells_analyzed = 1
             cells_parasitized = 1 if prob_parasitized >= 0.5 else 0
-            parasitemia_pct = round(prob_parasitized * 100, 2) if prob_parasitized >= 0.5 else 0.0
+            # Parasitemia (% of infected red cells) can't be measured from one cell.
+            parasitemia_pct = None
     except RuntimeError as err:
         return jsonify({"success": False, "error": str(err)}), 503
 
@@ -477,10 +586,11 @@ def api_diagnose():
     image_b64 = image_to_base64(rgb_image)
     heatmap_b64 = generate_gradcam_overlay(rgb_image, prob_parasitized=prob_parasitized)
 
-    print(f"[DIAGNOSIS COMPLETE] Patient='{name}' File='{filename}' Mode='{mode}' Result='{label}' Conf={confidence_score}% Parasitemia={parasitemia_pct}%")
+    print(f"[DIAGNOSIS COMPLETE] Mode='{mode}' Result='{label}' Conf={confidence_score}% Parasitemia={parasitemia_pct}")
 
     # 3. Deterministic Risk Band, Needle Angle & Dynamic Tagline
-    risk_info = compute_risk_assessment(label, confidence_score, parasitemia_pct)
+    risk_info = compute_risk_assessment(label, confidence_score, parasitemia_pct or 0.0,
+                                        mode=mode, cells_parasitized=cells_parasitized)
 
     # 4. Create or Get Patient & Append Visit Record in DB
     patient_id = db.create_or_get_patient(name, patient_code, age, gender, phone)
@@ -497,7 +607,13 @@ def api_diagnose():
         risk_band=risk_info["risk_band"],
         risk_tagline=risk_info["tagline"],
         image_data=image_b64,
-        heatmap_data=heatmap_b64
+        heatmap_data=heatmap_b64,
+        village=village,
+        district=district,
+        health_worker=health_worker,
+        latitude=latitude,
+        longitude=longitude,
+        referred=risk_info["refer"],
     )
 
     records = db.get_all_records_with_latest_visit()
@@ -518,6 +634,13 @@ def api_diagnose():
             "risk_value": risk_info["risk_value"],
             "needle_angle": risk_info["needle_angle"],
             "risk_tagline": risk_info["tagline"],
+            "refer": risk_info["refer"],
+            "mode": mode,
+            "cells_analyzed": cells_analyzed,
+            "cells_parasitized": cells_parasitized,
+            "village": village,
+            "district": district,
+            "health_worker": health_worker,
             "image_data": image_b64,
             "heatmap_data": heatmap_b64
         },
@@ -714,9 +837,31 @@ def api_patient_report(patient_id):
         download_name=f"cellscope_report_{safe_name}.pdf",
     )
 
+@app.route("/api/outbreaks", methods=["GET"])
+def api_outbreaks():
+    """Village-level case clusters for the outbreak map."""
+    try:
+        days = max(1, min(int(request.args.get("days", 14)), 90))
+        min_pos = max(1, min(int(request.args.get("min_positive", 3)), 50))
+    except ValueError:
+        return jsonify({"error": "days and min_positive must be integers"}), 400
+    return jsonify(db.get_outbreak_summary(days=days, hotspot_min_positive=min_pos))
+
+
+@app.route("/api/referrals", methods=["GET"])
+def api_referrals():
+    """Patients flagged High / Critical risk who should be seen by a doctor."""
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 365))
+    except ValueError:
+        return jsonify({"error": "days must be an integer"}), 400
+    return jsonify(db.get_referrals(days=days))
+
+
 @app.route("/health")
 def health():
-    return jsonify({"model_loaded": os.path.exists(MODEL_PATH), "status": "active"})
+    return jsonify({"model_loaded": os.path.exists(MODEL_PATH), "status": "active",
+                    "encryption_at_rest": encryption_enabled(), "auth_enabled": bool(AUTH_PASSWORD)})
 
 if __name__ == "__main__":
     # Render (and most hosts) assign the port through $PORT; 5050 is the local default.
