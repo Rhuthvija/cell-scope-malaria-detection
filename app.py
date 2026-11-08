@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp()
 
 import numpy as np
-from flask import Flask, Response, jsonify, render_template, request, send_file
+import secrets
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session, url_for
 from PIL import Image
 
 import db
@@ -45,6 +46,16 @@ if os.path.exists(CLASS_INDICES_PATH):
         print(f"Warning: Failed to read {CLASS_INDICES_PATH}: {e}")
 
 app = Flask(__name__)
+
+# Sessions (health-worker logins). Set CELLSCOPE_SECRET_KEY in production so
+# logins survive restarts; otherwise a random key is used per process.
+app.secret_key = os.environ.get("CELLSCOPE_SECRET_KEY") or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),   # HTTPS on Render
+    PERMANENT_SESSION_LIFETIME=60 * 60 * 12,                  # one working day
+)
 
 # ---------------------------------------------------------------------------
 # Security
@@ -98,6 +109,87 @@ def _rate_limit():
         return jsonify({"success": False, "error": "Too many requests. Please wait a minute and try again."}), 429
     hits.append(now)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Health-worker accounts and roles
+# ---------------------------------------------------------------------------
+#   asha     - ASHA / field worker: runs tests, sees only her own patients
+#   doctor   - PHC doctor: runs tests, sees all records, referrals and the map
+#   district - district malaria officer: sees records, analytics and the map
+#   admin    - everything
+REQUIRE_LOGIN = os.environ.get("CELLSCOPE_REQUIRE_LOGIN", "1") == "1"
+ROLE_PAGES = {
+    "asha": ["home", "diagnosis", "tracking"],
+    "doctor": ["home", "diagnosis", "tracking", "analytics", "outbreaks"],
+    "district": ["home", "tracking", "analytics", "outbreaks"],
+    "admin": ["home", "diagnosis", "tracking", "analytics", "outbreaks"],
+}
+ROLE_LABELS = {"asha": "ASHA Worker", "doctor": "PHC Doctor", "district": "District Officer", "admin": "Admin"}
+PUBLIC_PATHS = {"/login", "/health", "/sw.js"}
+CAN_DIAGNOSE = {"asha", "doctor", "admin"}
+CAN_SURVEIL = {"doctor", "district", "admin"}
+
+
+def current_user():
+    if not REQUIRE_LOGIN:
+        return {"username": "", "display_name": "", "role": "admin", "village": "", "district": ""}
+    username = session.get("user")
+    return db.get_user(username) if username else None
+
+
+@app.before_request
+def _require_login():
+    if not REQUIRE_LOGIN or request.path in PUBLIC_PATHS or request.path.startswith("/static/"):
+        return None
+    user = current_user()
+    if user:
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"success": False, "error": "Please log in."}), 401
+    return redirect(url_for("login", next=request.path))
+
+
+def _forbid_unless(roles):
+    user = current_user()
+    if not user or user["role"] not in roles:
+        return jsonify({"success": False, "error": "Your role doesn't have access to this."}), 403
+    return None
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not REQUIRE_LOGIN:
+        return redirect(url_for("index"))
+    demo = not os.environ.get("RENDER") or os.environ.get("CELLSCOPE_DEMO_DATA") == "1"
+    error = None
+    if request.method == "POST":
+        user = db.verify_user(request.form.get("username", ""), request.form.get("password", ""))
+        if user:
+            session.clear()
+            session["user"] = user["username"]
+            session.permanent = True
+            nxt = request.args.get("next") or "/"
+            return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else "/")
+        error = "Wrong username or password."
+        time.sleep(0.5)   # slow down password guessing
+    return render_template("login.html", error=error, demo=demo,
+                           demo_users=db.DEMO_USERS if demo else [], demo_password=db.DEMO_PASSWORD,
+                           role_labels=ROLE_LABELS)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/api/me")
+def api_me():
+    user = current_user() or {}
+    role = user.get("role", "admin")
+    return jsonify({**user, "role_label": ROLE_LABELS.get(role, role),
+                    "pages": ROLE_PAGES.get(role, []), "login_enabled": REQUIRE_LOGIN})
 
 
 @app.after_request
@@ -547,6 +639,10 @@ def api_diagnose_selftest():
 
 @app.route("/api/diagnose", methods=["POST"])
 def api_diagnose():
+    denied = _forbid_unless(CAN_DIAGNOSE)
+    if denied:
+        return denied
+    user = current_user()
     name = (request.form.get("name") or "").strip()
     if not name:
         return jsonify({"error": "Patient name is required."}), 400
@@ -561,6 +657,11 @@ def api_diagnose():
     village = (request.form.get("village") or "").strip()[:80]
     district = (request.form.get("district") or "").strip()[:80]
     health_worker = (request.form.get("health_worker") or "").strip()[:80]
+    # An ASHA worker's tests are always recorded under her own name and area.
+    if user and user["role"] == "asha":
+        health_worker = user["display_name"]
+        village = village or user.get("village", "")
+        district = district or user.get("district", "")
 
     def _coord(key, lo, hi):
         try:
@@ -685,9 +786,10 @@ def api_diagnose():
         latitude=latitude,
         longitude=longitude,
         referred=risk_info["refer"],
+        created_by=(user or {}).get("username", ""),
     )
 
-    records = db.get_all_records_with_latest_visit()
+    records = db.get_all_records_with_latest_visit(_records_scope())
 
     return jsonify({
         "success": True,
@@ -724,7 +826,7 @@ def api_diagnose():
 # ---------------------------------------------------------------------------
 @app.route("/api/patient-records", methods=["GET"])
 def api_patient_records():
-    records = db.get_all_records_with_latest_visit()
+    records = db.get_all_records_with_latest_visit(_records_scope())
     return jsonify(records)
 
 # ---------------------------------------------------------------------------
@@ -781,9 +883,11 @@ def api_analytics_data():
 @app.route("/api/patients/save", methods=["POST"], strict_slashes=False)
 def api_patients():
     if request.method == "POST":
+        denied = _forbid_unless(CAN_DIAGNOSE)
+        if denied:
+            return denied
         try:
             data = request.get_json(silent=True) or request.form or {}
-            app.logger.info("[PATIENT SAVE] Payload received: %s", data)
 
             name = (data.get("name") or "").strip()
             if not name:
@@ -816,7 +920,7 @@ def api_patients():
                 return jsonify({"success": False, "error": "Failed to retrieve saved patient record from database."}), 500
 
             visits = db.list_visits(patient_id)
-            app.logger.info("[PATIENT SAVE] Successfully saved: %s (ID: %s, Code: %s, Visits: %d)", patient["name"], patient["id"], patient["patient_code"], len(visits))
+            app.logger.info("[PATIENT SAVE] Saved patient ID %s (%d visits)", patient["id"], len(visits))
 
             return jsonify({
                 "success": True,
@@ -909,9 +1013,18 @@ def api_patient_report(patient_id):
         download_name=f"cellscope_report_{safe_name}.pdf",
     )
 
+def _records_scope():
+    """ASHA workers see only the tests they recorded; other roles see all."""
+    user = current_user()
+    return user["username"] if (REQUIRE_LOGIN and user and user["role"] == "asha") else None
+
+
 @app.route("/api/outbreaks", methods=["GET"])
 def api_outbreaks():
     """Village-level case clusters for the outbreak map."""
+    denied = _forbid_unless(CAN_SURVEIL)
+    if denied:
+        return denied
     try:
         days = max(1, min(int(request.args.get("days", 14)), 90))
         min_pos = max(1, min(int(request.args.get("min_positive", 3)), 50))
@@ -923,6 +1036,9 @@ def api_outbreaks():
 @app.route("/api/referrals", methods=["GET"])
 def api_referrals():
     """Patients flagged High / Critical risk who should be seen by a doctor."""
+    denied = _forbid_unless(CAN_SURVEIL)
+    if denied:
+        return denied
     try:
         days = max(1, min(int(request.args.get("days", 30)), 365))
     except ValueError:

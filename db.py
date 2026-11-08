@@ -47,8 +47,20 @@ CREATE TABLE IF NOT EXISTS visits (
     latitude REAL,
     longitude REAL,
     referred INTEGER DEFAULT 0,
+    created_by TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     FOREIGN KEY (patient_id) REFERENCES patients (id)
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL,              -- asha | doctor | district | admin
+    village TEXT DEFAULT '',
+    district TEXT DEFAULT '',
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -97,11 +109,18 @@ def init_db():
             "ALTER TABLE visits ADD COLUMN latitude REAL",
             "ALTER TABLE visits ADD COLUMN longitude REAL",
             "ALTER TABLE visits ADD COLUMN referred INTEGER DEFAULT 0",
+            "ALTER TABLE visits ADD COLUMN created_by TEXT DEFAULT ''",
         ]:
             try:
                 conn.execute(col_def)
             except Exception:
                 pass
+
+        # Databases created before accounts existed: add the demo accounts
+        # (demo mode only) so there is always a way to log in.
+        demo_mode = not os.environ.get("RENDER") or os.environ.get("CELLSCOPE_DEMO_DATA") == "1"
+        if demo_mode and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            _seed_demo_users(conn)
 
 
 def wilson_confidence_interval(k: int, n: int, z: float = 1.96):
@@ -181,7 +200,8 @@ def get_patient_by_code(patient_code: str):
 
 
 def add_visit(patient_id: int, visit_date: str, cells_analyzed: int, cells_parasitized: int, diagnosis_result: str = None, confidence_score: float = 95.0, risk_band: str = "Low risk", risk_tagline: str = "", image_data: str = None, heatmap_data: str = None,
-              village: str = "", district: str = "", health_worker: str = "", latitude: float = None, longitude: float = None, referred: bool = False):
+              village: str = "", district: str = "", health_worker: str = "", latitude: float = None, longitude: float = None, referred: bool = False,
+              created_by: str = ""):
     pct = round((cells_parasitized / cells_analyzed) * 100, 2) if cells_analyzed else 0.0
     ci_low, ci_high = wilson_confidence_interval(cells_parasitized, cells_analyzed)
     tier = parasitemia_tier(pct)
@@ -193,13 +213,13 @@ def add_visit(patient_id: int, visit_date: str, cells_analyzed: int, cells_paras
             """INSERT INTO visits
                (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline,
                 cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier, image_data, heatmap_data,
-                village, district, health_worker, latitude, longitude, referred, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                village, district, health_worker, latitude, longitude, referred, created_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 patient_id, visit_date, diagnosis_result, float(confidence_score), risk_band, risk_tagline,
                 cells_analyzed, cells_parasitized, pct, ci_low, ci_high, tier, encrypt(image_data), encrypt(heatmap_data),
                 (village or "").strip(), (district or "").strip(), (health_worker or "").strip(),
-                latitude, longitude, 1 if referred else 0, datetime.now(timezone.utc).isoformat(),
+                latitude, longitude, 1 if referred else 0, (created_by or "").strip(), datetime.now(timezone.utc).isoformat(),
             ),
         )
         return cur.lastrowid
@@ -232,8 +252,10 @@ def get_visit_by_id(visit_id: int):
         return decrypt_row(dict(row)) if row else None
 
 
-def get_all_visit_records():
-    """Returns every diagnostic visit record in the database with patient details, newest first."""
+def get_all_visit_records(created_by: str = None):
+    """Returns diagnostic visit records with patient details, newest first.
+    created_by: if given, only visits recorded by that user (an ASHA worker
+    sees her own patients, not the whole district's)."""
     with get_conn() as conn:
         query = """
         SELECT
@@ -260,18 +282,23 @@ def get_all_visit_records():
             v.district,
             v.health_worker,
             v.referred,
+            v.created_by,
             v.created_at as visit_created_at
         FROM visits v
         JOIN patients p ON v.patient_id = p.id
+        {where}
         ORDER BY v.visit_date DESC, v.created_at DESC
         """
-        rows = conn.execute(query).fetchall()
+        if created_by is not None:
+            rows = conn.execute(query.format(where="WHERE v.created_by = ?"), (created_by,)).fetchall()
+        else:
+            rows = conn.execute(query.format(where="")).fetchall()
         return [decrypt_row(dict(r)) for r in rows]
 
 
-def get_all_records_with_latest_visit():
-    """Alias for all visit records with patient details, newest first."""
-    return get_all_visit_records()
+def get_all_records_with_latest_visit(created_by: str = None):
+    """Alias for visit records with patient details, newest first."""
+    return get_all_visit_records(created_by)
 
 
 def get_analytics_dataset():
@@ -457,11 +484,79 @@ def _seed_demo_data(conn):
         conn.execute(
             """INSERT INTO visits (patient_id, visit_date, diagnosis_result, confidence_score, risk_band, risk_tagline,
                    cells_analyzed, cells_parasitized, parasitemia_pct, ci_low, ci_high, tier,
-                   village, district, health_worker, latitude, longitude, referred, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   village, district, health_worker, latitude, longitude, referred, created_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (cur.lastrowid, (now - timedelta(days=days_ago)).strftime("%Y-%m-%d"), result,
              93.0 if result == "Parasitized" else 97.5, band, "Demo record",
              cells, infected, pct, ci_low, ci_high, parasitemia_tier(pct),
              village, district, worker, lat, lon,
-             1 if band in ("High risk", "Critical risk") else 0, now.isoformat()),
+             1 if band in ("High risk", "Critical risk") else 0,
+             "asha.sunitha" if worker == "ASHA Sunitha" else "", now.isoformat()),
         )
+    _seed_demo_users(conn)
+
+
+# ---------------------------------------------------------------------------
+# Users (health-worker accounts)
+# ---------------------------------------------------------------------------
+ROLES = ("asha", "doctor", "district", "admin")
+DEMO_PASSWORD = "demo1234"
+DEMO_USERS = [
+    # username, display name, role, village, district
+    ("asha.sunitha", "ASHA Sunitha", "asha", "Charla", "Bhadradri Kothagudem"),
+    ("doctor.charla", "Dr. Ravi (PHC Charla)", "doctor", "Charla", "Bhadradri Kothagudem"),
+    ("district.bhadradri", "District Malaria Officer", "district", "", "Bhadradri Kothagudem"),
+    ("admin", "Administrator", "admin", "", ""),
+]
+
+
+def _seed_demo_users(conn):
+    from werkzeug.security import generate_password_hash
+    now = datetime.now(timezone.utc).isoformat()
+    for username, name, role, village, district in DEMO_USERS:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (username, display_name, role, village, district, password_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (username, name, role, village, district, generate_password_hash(DEMO_PASSWORD), now),
+        )
+
+
+def create_user(username: str, display_name: str, role: str, password: str, village: str = "", district: str = ""):
+    from werkzeug.security import generate_password_hash
+    if role not in ROLES:
+        raise ValueError(f"role must be one of {ROLES}")
+    if len(password) < 8:
+        raise ValueError("password must be at least 8 characters")
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO users (username, display_name, role, village, district, password_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (username.strip().lower(), display_name.strip(), role, village.strip(), district.strip(),
+             generate_password_hash(password), datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def verify_user(username: str, password: str):
+    """Return the user dict (without the hash) if the password matches, else None."""
+    from werkzeug.security import check_password_hash
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE username = ?", ((username or "").strip().lower(),)).fetchone()
+    if not row or not check_password_hash(row["password_hash"], password or ""):
+        return None
+    user = dict(row)
+    user.pop("password_hash", None)
+    return user
+
+
+def get_user(username: str):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, username, display_name, role, village, district FROM users WHERE username = ?",
+            (username,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_users():
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT username, display_name, role, village, district FROM users ORDER BY role, username").fetchall()]

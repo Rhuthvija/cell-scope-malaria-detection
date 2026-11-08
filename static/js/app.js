@@ -562,6 +562,18 @@ function displayUploadPreview(imgDataUrl, filename, sizeBytes) {
   if (btnLabel) {
     btnLabel.textContent = 'Run MobileNetV2 Diagnosis';
   }
+
+  // A single-cell crop is ~100-200 px. A big photo is almost certainly a whole
+  // smear field, so switch to Full Smear mode automatically -- one less thing
+  // for a health worker to get wrong.
+  const probe = new Image();
+  probe.onload = () => {
+    if (currentUploadMode === 'single' && probe.naturalWidth > 450 && probe.naturalHeight > 450) {
+      setUploadMode('smear');
+      if (modeEl) modeEl.textContent = 'Full Smear Mode (auto-detected)';
+    }
+  };
+  probe.src = imgDataUrl;
 }
 
 function removeUploadedImage(event) {
@@ -593,140 +605,35 @@ function removeUploadedImage(event) {
 }
 
 /* Quick Sample Preset Generators with Realistic Microscopy Morphology */
-function loadSampleImage(type) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d');
+// Quick presets load REAL images: single cells from the NIH / NLM malaria
+// dataset, and demo smears assembled from real NIH cells (static/samples/).
+// Each click picks a different sample so the demo isn't always the same cell.
+let sampleManifest = null;
+const sampleCursor = { parasitized: 0, uninfected: 0, smear: 0 };
 
-  // Realistic dark microscope backdrop
-  ctx.fillStyle = '#060a12';
-  ctx.fillRect(0, 0, 256, 256);
+async function loadSampleImage(type) {
+  try {
+    if (!sampleManifest) {
+      sampleManifest = await (await fetch('/static/samples/manifest.json')).json();
+    }
+    const list = sampleManifest[type] || [];
+    if (!list.length) throw new Error('no samples for ' + type);
+    const name = list[sampleCursor[type] % list.length];
+    sampleCursor[type] += 1;
 
-  // Subtle circular optical illumination vignette
-  const bgGrad = ctx.createRadialGradient(128, 128, 20, 128, 128, 128);
-  bgGrad.addColorStop(0, 'rgba(30, 41, 59, 0.7)');
-  bgGrad.addColorStop(1, 'rgba(6, 10, 18, 0.95)');
-  ctx.fillStyle = bgGrad;
-  ctx.fillRect(0, 0, 256, 256);
-
-  let filename = '';
-  let approxBytes = 48500;
-
-  if (type === 'parasitized') {
-    setUploadMode('single');
-    filename = 'sample_parasitized_cell_P_falciparum.png';
-    approxBytes = 56200;
-
-    // Biconcave RBC Body
-    const rbcGrad = ctx.createRadialGradient(115, 115, 15, 128, 128, 80);
-    rbcGrad.addColorStop(0, '#f472b6');
-    rbcGrad.addColorStop(0.7, '#db2777');
-    rbcGrad.addColorStop(1, '#9d174d');
-
-    ctx.beginPath();
-    ctx.arc(128, 128, 82, 0, Math.PI * 2);
-    ctx.fillStyle = rbcGrad;
-    ctx.shadowColor = '#ec4899';
-    ctx.shadowBlur = 16;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    // Pale central pallor
-    ctx.beginPath();
-    ctx.arc(128, 128, 30, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(251, 207, 232, 0.5)';
-    ctx.fill();
-
-    // Plasmodium falciparum Ring Trophozoite (Giemsa Violet Ring + Chromatin Dot)
-    ctx.beginPath();
-    ctx.arc(110, 108, 18, 0, Math.PI * 2);
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = '#6d28d9';
-    ctx.stroke();
-
-    // Chromatin Ruby Dot
-    ctx.beginPath();
-    ctx.arc(124, 98, 5.5, 0, Math.PI * 2);
-    ctx.fillStyle = '#f43f5e';
-    ctx.shadowColor = '#f43f5e';
-    ctx.shadowBlur = 10;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-  } else if (type === 'uninfected') {
-    setUploadMode('single');
-    filename = 'sample_uninfected_normal_rbc.png';
-    approxBytes = 42100;
-
-    // Normal Healthy Erythrocyte
-    const rbcGrad = ctx.createRadialGradient(120, 120, 15, 128, 128, 80);
-    rbcGrad.addColorStop(0, '#34d399');
-    rbcGrad.addColorStop(0.7, '#059669');
-    rbcGrad.addColorStop(1, '#064e3b');
-
-    ctx.beginPath();
-    ctx.arc(128, 128, 80, 0, Math.PI * 2);
-    ctx.fillStyle = rbcGrad;
-    ctx.shadowColor = '#10b981';
-    ctx.shadowBlur = 14;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    // Clean normal central pallor
-    ctx.beginPath();
-    ctx.arc(128, 128, 32, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(167, 243, 208, 0.45)';
-    ctx.fill();
-
-  } else {
-    setUploadMode('smear');
-    filename = 'sample_blood_smear_full_field.png';
-    approxBytes = 84600;
-
-    // Multiple RBCs across smear field
-    const cells = [
-      { x: 70, y: 70, r: 36, infected: false },
-      { x: 170, y: 80, r: 38, infected: true },
-      { x: 80, y: 170, r: 35, infected: false },
-      { x: 180, y: 180, r: 37, infected: true },
-      { x: 128, y: 128, r: 34, infected: false },
-      { x: 215, y: 120, r: 28, infected: false },
-      { x: 40, y: 125, r: 30, infected: false }
-    ];
-
-    cells.forEach(c => {
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
-      ctx.fillStyle = c.infected ? '#db2777' : '#059669';
-      ctx.fill();
-
-      // Inner pallor
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, c.r * 0.4, 0, Math.PI * 2);
-      ctx.fillStyle = c.infected ? 'rgba(251, 207, 232, 0.4)' : 'rgba(167, 243, 208, 0.4)';
-      ctx.fill();
-
-      if (c.infected) {
-        ctx.beginPath();
-        ctx.arc(c.x - 6, c.y - 6, 8, 0, Math.PI * 2);
-        ctx.lineWidth = 2.5;
-        ctx.strokeStyle = '#6d28d9';
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.arc(c.x, c.y - 10, 3, 0, Math.PI * 2);
-        ctx.fillStyle = '#f43f5e';
-        ctx.fill();
-      }
+    setUploadMode(type === 'smear' ? 'smear' : 'single');
+    const blob = await (await fetch('/static/samples/' + name)).blob();
+    currentFile = new File([blob], name, { type: blob.type || 'image/png' });
+    const dataUrl = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
     });
+    displayUploadPreview(dataUrl, name, blob.size);
+  } catch (e) {
+    console.error('Sample failed to load:', e);
+    alert('Could not load the sample image. Please upload an image instead.');
   }
-
-  canvas.toBlob((blob) => {
-    currentFile = new File([blob], filename, { type: 'image/png' });
-    const dataUrl = canvas.toDataURL('image/png');
-    displayUploadPreview(dataUrl, filename, approxBytes);
-  }, 'image/png');
 }
 
 /* --------------------------------------------------------------------------

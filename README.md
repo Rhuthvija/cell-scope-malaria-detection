@@ -89,6 +89,28 @@ The model is a **single-cell classifier** (NIH crops: one cell on a black backgr
 python tools/evaluate_smears.py --data malaria --split test
 ```
 
+## Health-worker accounts
+
+Every page and API call requires a login (turn off with `CELLSCOPE_REQUIRE_LOGIN=0`). Passwords are stored hashed.
+
+| Role | Can do |
+|---|---|
+| **ASHA worker** (`asha`) | Run tests; sees only her own patients; tests are recorded under her name, village and district automatically |
+| **PHC doctor** (`doctor`) | Run tests; all records, analytics, referral list and outbreak map |
+| **District officer** (`district`) | Records, analytics and outbreak map (read-only, no testing) |
+| **Admin** (`admin`) | Everything |
+
+The server enforces these rules on every API call; the app hides tabs a role can't use. In demo mode the login page lists demo accounts (password `demo1234`): `asha.sunitha`, `doctor.charla`, `district.bhadradri`, `admin`. Create real accounts with:
+
+```bash
+python tools/manage_users.py add asha.padma "ASHA Padma" asha --village Dummugudem --district "Bhadradri Kothagudem"
+python tools/manage_users.py list
+```
+
+## Sample images
+
+The **Quick Sample Presets** load real images from the NIH dataset (`static/samples/`), cycling through six parasitized and six uninfected cells. The two smear presets are demo smears assembled from real NIH cells on a smear-like background; they exercise the full-smear pipeline but are not photos of a real slide (see `static/samples/SOURCE.md`). Uploading a large photo switches to Full Smear mode automatically.
+
 ## Risk bands
 
 | Result | Band | Rule |
@@ -114,7 +136,8 @@ High and Critical results are saved with `referred = 1`.
 | Protection | How |
 |---|---|
 | **Encryption at rest** | Phone numbers, blood-smear images and Grad-CAM images are encrypted in SQLite with Fernet (AES-128 + HMAC-SHA256) when `CELLSCOPE_ENCRYPTION_KEY` is set |
-| **Access lock** | Set `CELLSCOPE_PASSWORD` to require a login for every page and API call (browser login prompt, so the UI is unchanged). `/health` stays open |
+| **Health-worker logins** | Per-person accounts with roles (ASHA, PHC doctor, district officer, admin), hashed passwords, HTTP-only session cookies, server-side permission checks |
+| **Extra access lock** | Optionally set `CELLSCOPE_PASSWORD` for a site-wide browser password on top of the logins. `/health` stays open |
 | **HTTPS** | Provided by Render. HSTS header sent on HTTPS requests |
 | **Upload validation** | 10 MB size limit, image content checked (not just the file extension), pixel limit against decompression-bomb images |
 | **Rate limiting** | 30 diagnoses per minute per IP |
@@ -133,7 +156,9 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 |---|---|
 | `CELLSCOPE_ENCRYPTION_KEY` | Fernet key for encryption at rest (recommended) |
 | `CELLSCOPE_PASSWORD` / `CELLSCOPE_USERNAME` | Optional login lock (username defaults to `cellscope`) |
-| `CELLSCOPE_DEMO_DATA=1` | Load the demo Telangana village records on Render (for presentations) |
+| `CELLSCOPE_DEMO_DATA=1` | Load the demo Telangana village records and demo accounts on Render (for presentations) |
+| `CELLSCOPE_SECRET_KEY` | Signs login sessions; set it so logins survive restarts (render.yaml generates one) |
+| `CELLSCOPE_REQUIRE_LOGIN=0` | Turn off health-worker logins |
 | `CELLSCOPE_MAX_UPLOAD_MB`, `CELLSCOPE_RATE_LIMIT_PER_MIN` | Override the upload and rate limits |
 
 ## Tech stack
@@ -158,6 +183,9 @@ static/js/rural.js   Languages, village/GPS capture, upload compression, next st
 static/sw.js         Offline app shell (patient data is never cached)
 tools/evaluate_smears.py  Full-smear evaluation on BBBC041
 tools/convert_tflite.py   ~3 MB quantised model for phones / Raspberry Pi
+tools/manage_users.py     Create and list health-worker accounts
+templates/login.html      Health-worker login page
+static/samples/           Real NIH sample cells and demo smears
 train_model.py       Training script (retrains malaria_model.keras)
 malaria_model.keras  Pretrained model
 class_indices.json   Label mapping
@@ -212,7 +240,6 @@ The repo includes `render.yaml`, `.python-version` and pinned `requirements.txt`
 |---|---|
 | **Phone capture** with a low-cost clip-on microscope lens, validated with `evaluate_smears.py` | Removes the need for a lab microscope and camera setup |
 | **Fully offline Android app** using `tools/convert_tflite.py` (model already convertible to ~3 MB) | Screening with no internet at all |
-| **Multi-tenant accounts** (PHC / NGO / district) | Keeps each organisation's patient data separate (built, not yet deployed) |
 | **Species identification** (P. falciparum vs P. vivax) | Treatment in India depends on species |
 | **Offline queue**: save tests with no signal, sync later | Remote villages with no coverage |
 

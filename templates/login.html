@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log in — CELL SCOPE</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+<meta name="theme-color" content="#0b132b">
+</head>
+<body>
+
+<nav class="navbar">
+  <a class="brand-logo" href="/login">
+    <div class="brand-symbol"></div>
+    <span class="brand-title">CELL SCOPE</span>
+  </a>
+</nav>
+
+<div class="main-wrapper" style="max-width: 460px; margin: 60px auto; padding: 0 20px;">
+  <section class="glass-card">
+    <h2 class="card-title" style="margin-bottom: 4px;">🔐 Health Worker Login</h2>
+    <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 22px;">
+      For ASHA workers, PHC doctors and district malaria officers.
+    </p>
+
+    {% if error %}
+    <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--c-red); border-radius: 8px; padding: 10px 14px; color: #fca5a5; font-size: 0.88rem; margin-bottom: 16px;">
+      {{ error }}
+    </div>
+    {% endif %}
+
+    <form method="post" autocomplete="on">
+      <div class="form-group">
+        <label class="form-label" for="username">Username</label>
+        <input class="form-input" id="username" name="username" type="text" autocomplete="username" required autofocus>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password">Password</label>
+        <input class="form-input" id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn-action" type="submit" style="width: 100%; justify-content: center; margin-top: 8px;">Log In</button>
+    </form>
+  </section>
+
+  {% if demo %}
+  <section class="glass-card" style="margin-top: 20px;">
+    <h3 style="font-family: var(--font-heading); font-size: 1rem; color: var(--c-lavender); margin-bottom: 10px;">Demo accounts</h3>
+    <p style="color: var(--text-muted); font-size: 0.82rem; margin-bottom: 12px;">
+      Password for all: <code style="color: var(--c-cyan-light);">{{ demo_password }}</code>. Click one to fill it in.
+    </p>
+    <div style="display: grid; gap: 8px;">
+      {% for username, name, role, village, district in demo_users %}
+      <button type="button" class="btn-sm-secondary" style="text-align: left; display: flex; justify-content: space-between; gap: 10px;"
+              onclick="document.getElementById('username').value='{{ username }}'; document.getElementById('password').value='{{ demo_password }}';">
+        <span><strong>{{ username }}</strong></span>
+        <span style="color: var(--text-muted);">{{ role_labels[role] }}{% if district %} · {{ district }}{% endif %}</span>
+      </button>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+
+</body>
+</html>

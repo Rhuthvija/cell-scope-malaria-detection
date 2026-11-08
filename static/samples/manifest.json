@@ -1,0 +1,22 @@
+{
+  "parasitized": [
+    "parasitized_1.png",
+    "parasitized_2.png",
+    "parasitized_3.png",
+    "parasitized_4.png",
+    "parasitized_5.png",
+    "parasitized_6.png"
+  ],
+  "uninfected": [
+    "uninfected_1.png",
+    "uninfected_2.png",
+    "uninfected_3.png",
+    "uninfected_4.png",
+    "uninfected_5.png",
+    "uninfected_6.png"
+  ],
+  "smear": [
+    "smear_demo_1.jpg",
+    "smear_demo_2.jpg"
+  ]
+}

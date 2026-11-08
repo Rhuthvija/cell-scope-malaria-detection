@@ -41,7 +41,7 @@ const I18N = {
     wa_header: 'CELL SCOPE malaria screening', wa_patient: 'Patient', wa_village: 'Village', wa_result: 'Result',
     wa_parasitemia: 'Parasitemia', wa_date: 'Date', wa_worker: 'Health worker', wa_action: 'Action',
     wa_footer: 'Screening only — please confirm with RDT / microscopy.',
-    res_parasitized: 'Malaria parasites detected', res_uninfected: 'No parasites detected'
+    res_parasitized: 'Malaria parasites detected', res_uninfected: 'No parasites detected', logout: 'Log out'
   },
   te: {
     nav_home: 'హోమ్', nav_diagnosis: 'పరీక్ష', nav_tracking: 'రోగుల రికార్డులు', nav_analytics: 'విశ్లేషణ',
@@ -72,7 +72,7 @@ const I18N = {
     wa_header: 'CELL SCOPE మలేరియా స్క్రీనింగ్', wa_patient: 'రోగి', wa_village: 'గ్రామం', wa_result: 'ఫలితం',
     wa_parasitemia: 'పరాన్నజీవుల శాతం', wa_date: 'తేదీ', wa_worker: 'ఆరోగ్య కార్యకర్త', wa_action: 'చర్య',
     wa_footer: 'ఇది స్క్రీనింగ్ మాత్రమే — దయచేసి RDT / మైక్రోస్కోపీతో నిర్ధారించండి.',
-    res_parasitized: 'మలేరియా పరాన్నజీవులు కనుగొనబడ్డాయి', res_uninfected: 'పరాన్నజీవులు కనిపించలేదు'
+    res_parasitized: 'మలేరియా పరాన్నజీవులు కనుగొనబడ్డాయి', res_uninfected: 'పరాన్నజీవులు కనిపించలేదు', logout: 'లాగ్ అవుట్'
   },
   hi: {
     nav_home: 'होम', nav_diagnosis: 'जाँच', nav_tracking: 'मरीज़ रिकॉर्ड', nav_analytics: 'विश्लेषण',
@@ -103,7 +103,7 @@ const I18N = {
     wa_header: 'CELL SCOPE मलेरिया स्क्रीनिंग', wa_patient: 'मरीज़', wa_village: 'गाँव', wa_result: 'परिणाम',
     wa_parasitemia: 'परजीवी प्रतिशत', wa_date: 'तारीख', wa_worker: 'स्वास्थ्य कार्यकर्ता', wa_action: 'कार्रवाई',
     wa_footer: 'यह केवल स्क्रीनिंग है — कृपया RDT / माइक्रोस्कोपी से पुष्टि करें।',
-    res_parasitized: 'मलेरिया परजीवी मिले', res_uninfected: 'परजीवी नहीं मिले'
+    res_parasitized: 'मलेरिया परजीवी मिले', res_uninfected: 'परजीवी नहीं मिले', logout: 'लॉग आउट'
   }
 };
 
@@ -365,8 +365,57 @@ function renderOutbreakMap(villages) {
   }, 150);
 }
 
+/* ------------------------------------------------------- user and role --- */
+// Shows who is logged in, hides tabs the role can't use (the server enforces
+// the same rules), and fills the health worker's name from her account.
+let currentUser = null;
+
+async function applyUserRole() {
+  try {
+    const res = await fetch('/api/me');
+    if (res.status === 401) { window.location.href = '/login'; return; }
+    currentUser = await res.json();
+  } catch (e) { return; }
+  if (!currentUser || !currentUser.login_enabled) return;
+
+  const allowed = new Set(currentUser.pages || []);
+  ['home', 'diagnosis', 'tracking', 'analytics', 'outbreaks'].forEach((tab) => {
+    const nav = document.getElementById('nav-' + tab);
+    if (nav) nav.style.display = allowed.has(tab) ? '' : 'none';
+  });
+
+  const links = document.querySelector('.nav-links');
+  if (links && !document.getElementById('nav-user')) {
+    const chip = document.createElement('span');
+    chip.id = 'nav-user';
+    chip.className = 'nav-item';
+    chip.style.cursor = 'default';
+    chip.title = currentUser.district ? `${currentUser.role_label} · ${currentUser.district}` : currentUser.role_label;
+    chip.textContent = `👤 ${currentUser.display_name}`;
+    const out = document.createElement('a');
+    out.className = 'nav-item';
+    out.href = '/logout';
+    out.setAttribute('data-i18n', 'logout');
+    out.textContent = t('logout');
+    links.appendChild(chip);
+    links.appendChild(out);
+  }
+
+  const worker = document.getElementById('rural-worker');
+  const village = document.getElementById('rural-village');
+  const district = document.getElementById('rural-district');
+  if (worker && currentUser.role === 'asha') {
+    worker.value = currentUser.display_name;
+    worker.readOnly = true;
+    worker.title = 'Recorded from your login';
+  }
+  if (village && !village.value && currentUser.village) village.value = currentUser.village;
+  if (district && !district.value && currentUser.district) district.value = currentUser.district;
+}
+
 /* ------------------------------------------------------------- startup --- */
 document.addEventListener('DOMContentLoaded', () => {
+  applyUserRole();
   try {
     const saved = JSON.parse(localStorage.getItem('cellscope_rural') || '{}');
     if (saved.village) document.getElementById('rural-village').value = saved.village;

@@ -12,8 +12,9 @@ distribution from training and the main source of full-smear errors. Each
 crop is now sized to the cell itself, with the background masked to black.
 
 Pipeline (classical CV, no extra training data needed):
-  1. Green channel + blur (best RBC contrast in Giemsa stains), Otsu threshold.
-     Works for pale backgrounds (normal smears) and dark ones (NIH-style).
+  1. Flatten uneven illumination, then Otsu-threshold each pixel's colour
+     distance from the background (catches pale cells; ignores dark corners).
+     Dark-background images (NIH-style crops) use a simple threshold.
   2. Fill holes, so the pale centre of an RBC doesn't split it into a ring.
   3. Estimate the typical cell radius from the image itself, so the pipeline
      adapts to any magnification or phone camera.
@@ -38,7 +39,7 @@ import numpy as np
 CROP_SIZE = 128               # matches the classifier's expected input size
 MIN_AREA_FRAC = 0.30          # < 30% of median cell area  -> speck / platelet
 MAX_AREA_FRAC = 2.20          # > 220% of median cell area -> WBC or unsplit clump
-MIN_CIRCULARITY = 0.50        # 1.0 = perfect circle; debris is usually irregular
+MIN_CIRCULARITY = 0.42        # 1.0 = perfect circle; debris is usually irregular
 CROP_PAD_FRAC = 0.08          # margin around each cell inside its crop
 MAX_CELLS = 800               # safety cap for very dense / mis-segmented images
 ABS_MIN_AREA = 60             # pixels; ignore noise in tiny images
@@ -61,18 +62,55 @@ def _circularity(contour) -> float:
 
 
 def _foreground_mask(rgb_image: np.ndarray) -> np.ndarray:
-    """Binary mask (255 = cell) that works for light or dark backgrounds."""
-    green = rgb_image[:, :, 1]
-    blurred = cv2.GaussianBlur(green, (5, 5), 0)
+    """Binary mask (255 = cell).
 
-    # Decide polarity from the image border, which is mostly background.
-    border = np.concatenate([blurred[0, :], blurred[-1, :], blurred[:, 0], blurred[:, -1]])
-    dark_background = np.median(border) < np.median(blurred)
-    mode = cv2.THRESH_BINARY if dark_background else cv2.THRESH_BINARY_INV
-    _, mask = cv2.threshold(blurred, 0, 255, mode + cv2.THRESH_OTSU)
+    Brightfield smear photos have a bright background, uneven illumination
+    (darker corners) and cells that can be very pale. So instead of a global
+    brightness threshold:
+      1. estimate the background illumination with a morphological closing
+         (removes the darker cells) on a downscaled image, and flatten it;
+      2. measure how far each pixel's colour is from the background colour
+         (CIE Lab distance), which catches pale lavender cells too;
+      3. Otsu-threshold that distance.
+    Dark-background images (e.g. already-cropped NIH-style cells) use a simple
+    inverted threshold instead.
+    """
+    h, w = rgb_image.shape[:2]
+    lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB).astype(np.float32)
+    L = lab[:, :, 0]
+    border = np.concatenate([L[0, :], L[-1, :], L[:, 0], L[:, -1]])
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    if np.median(border) < 60:                              # dark background
+        g = cv2.GaussianBlur(rgb_image[:, :, 1], (5, 5), 0)
+        _, mask = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        # 1. Illumination: closing with a kernel larger than any cell.
+        scale = 256.0 / max(h, w)
+        small = cv2.resize(lab, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+        k = max(15, int(min(small.shape[:2]) / 4) | 1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        bg_L = cv2.morphologyEx(small[:, :, 0], cv2.MORPH_CLOSE, kernel)
+        bg_L = cv2.GaussianBlur(bg_L, (k, k), 0)
+        bg_L = cv2.resize(bg_L, (w, h), interpolation=cv2.INTER_LINEAR)
+        L_flat = L * (np.median(bg_L) / np.maximum(bg_L, 1.0))
+
+        # 2. Background colour = typical colour of clearly-background pixels.
+        bright = L_flat >= np.percentile(L_flat, 60)
+        ref_a, ref_b = np.median(lab[:, :, 1][bright]), np.median(lab[:, :, 2][bright])
+        ref_L = np.median(L_flat[bright])
+        dist = np.sqrt((L_flat - ref_L) ** 2 * 0.6 + (lab[:, :, 1] - ref_a) ** 2 + (lab[:, :, 2] - ref_b) ** 2)
+        dist = cv2.GaussianBlur(dist, (5, 5), 0)
+        dist8 = np.clip(dist * (255.0 / max(np.percentile(dist, 99.5), 1e-3)), 0, 255).astype(np.uint8)
+
+        # 3. Threshold the colour distance (cells = far from background). Otsu
+        # alone misses very pale cells, so we go to 65% of its value; the
+        # size/shape filters below reject the extra background specks.
+        t_otsu, _ = cv2.threshold(dist8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        _, mask = cv2.threshold(dist8, t_otsu * 0.65, 255, cv2.THRESH_BINARY)
+
+    kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel3, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel3, iterations=2)
 
     # Fill holes (RBC central pallor) by filling every external contour.
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
