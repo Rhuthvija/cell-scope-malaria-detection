@@ -57,11 +57,11 @@ function initGlossy3DCellularCanvas() {
     { x: 0.86, y: 0.68, r: 75, color1: '#f43f5e', color2: '#7c3aed', color3: '#ddd6fe', phase: 4.8 },
   ];
 
-  // Hover interaction state (kept separate from the immutable anchors above).
-  // Each cell eases its own hover amount 0..1, so swelling and glow fade in
-  // and out smoothly instead of snapping.
-  const hoverState = cells.map(() => ({ h: 0, ring: 0 }));
-  const mouse = { x: -9999, y: -9999, active: false };
+  // Cursor attraction: every cell drifts toward the cursor, then floats back
+  // when it leaves. A small spring per cell keeps the motion fluid and
+  // slightly bouncy; smaller (lighter) cells travel further than big ones.
+  const drift = cells.map(() => ({ ox: 0, oy: 0, vx: 0, vy: 0 }));
+  const mouse = { x: 0, y: 0, active: false };
   const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function setPointer(clientX, clientY) {
@@ -77,6 +77,26 @@ function initGlossy3DCellularCanvas() {
       if (e.touches[0]) setPointer(e.touches[0].clientX, e.touches[0].clientY);
     }, { passive: true });
     hero.addEventListener('touchend', () => { mouse.active = false; });
+  }
+
+  function updateDrift(i, x, y, r) {
+    const d = drift[i];
+    let tx = 0, ty = 0;
+    if (mouse.active && !reduceMotion) {
+      const dx = mouse.x - x;
+      const dy = mouse.y - y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const lightness = 90 / r;                          // small cells ~1.3, big ~0.7
+      const pull = Math.min(1, 520 / (dist + 260)) * lightness;   // closer = stronger
+      const maxTravel = 70 * lightness;
+      tx = (dx / dist) * Math.min(dist * 0.35 * pull, maxTravel);
+      ty = (dy / dist) * Math.min(dist * 0.35 * pull, maxTravel);
+    }
+    // Damped spring toward the target offset.
+    d.vx = (d.vx + (tx - d.ox) * 0.035) * 0.86;
+    d.vy = (d.vy + (ty - d.oy) * 0.035) * 0.86;
+    d.ox += d.vx;
+    d.oy += d.vy;
   }
 
   function resizeCanvas() {
@@ -104,51 +124,20 @@ function initGlossy3DCellularCanvas() {
     cells.forEach((c, i) => {
       // Positions are recalculated from immutable anchors on each frame rather
       // than incremented, so they can never wander or wrap off the viewport.
-      let x = width * c.x + Math.sin(time + c.phase) * 8;
-      let y = height * c.y + Math.cos(time * 0.8 + c.phase) * 6;
-      const baseR = c.r + Math.sin(time * 1.5 + c.phase) * 5;
-
-      // --- Hover: swell + glow when the cursor is over the cell, and a gentle
-      // nudge away from the cursor when it passes close by. ---
-      const st = hoverState[i];
-      const dx = x - mouse.x;
-      const dy = y - mouse.y;
-      const dist = Math.hypot(dx, dy);
-      const inside = mouse.active && dist < baseR * 1.1;
-      st.h += ((inside ? 1 : 0) - st.h) * (reduceMotion ? 1 : 0.12);
-      if (inside) st.ring = (st.ring + 0.018) % 1; else st.ring = 0;
-
-      if (mouse.active && !reduceMotion) {
-        const reach = baseR + 160;
-        if (dist < reach && dist > 0.001) {
-          const push = (1 - dist / reach) * 14 * (1 - st.h);   // hovered cell stays put
-          x += (dx / dist) * push;
-          y += (dy / dist) * push;
-        }
-      }
-      const offsetR = baseR * (1 + 0.12 * st.h);
+      const ax = width * c.x + Math.sin(time + c.phase) * 8;
+      const ay = height * c.y + Math.cos(time * 0.8 + c.phase) * 6;
+      if (advance) updateDrift(i, ax, ay, c.r);
+      const x = ax + drift[i].ox;
+      const y = ay + drift[i].oy;
+      const offsetR = c.r + Math.sin(time * 1.5 + c.phase) * 5;
 
       ctx.save();
       ctx.beginPath();
       ctx.arc(x, y, offsetR, 0, Math.PI * 2);
 
-      // Specular highlight sits top-left at rest and slides toward the cursor
-      // on hover, which gives the glossy cell a 3D, "looking at you" feel.
-      let hx = x - offsetR * 0.35;
-      let hy = y - offsetR * 0.35;
-      if (st.h > 0.01) {
-        // Point inside the cell in the cursor's direction (at most 0.45 r from centre).
-        const mx = mouse.x - x, my = mouse.y - y;
-        const m = Math.hypot(mx, my) || 1;
-        const reachR = Math.min(m, offsetR) * 0.45;
-        const tx = x + (mx / m) * reachR;
-        const ty = y + (my / m) * reachR;
-        hx += (tx - hx) * st.h;
-        hy += (ty - hy) * st.h;
-      }
       const grad = ctx.createRadialGradient(
-        hx,
-        hy,
+        x - offsetR * 0.35,
+        y - offsetR * 0.35,
         offsetR * 0.1,
         x,
         y,
@@ -161,26 +150,14 @@ function initGlossy3DCellularCanvas() {
 
       ctx.fillStyle = grad;
       ctx.shadowColor = c.color1;
-      ctx.shadowBlur = 40 + 45 * st.h;
+      ctx.shadowBlur = 40;
       ctx.fill();
 
-      ctx.lineWidth = 2 + st.h;
-      ctx.strokeStyle = `rgba(255, 255, 255, ${0.35 + 0.4 * st.h})`;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
       ctx.stroke();
-      ctx.restore();
 
-      // Soft ripple ring expanding outward while hovered.
-      if (st.h > 0.05 && !reduceMotion) {
-        const ringR = offsetR * (1.05 + st.ring * 0.45);
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(x, y, ringR, 0, Math.PI * 2);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = c.color3;
-        ctx.globalAlpha = (1 - st.ring) * 0.55 * st.h;
-        ctx.stroke();
-        ctx.restore();
-      }
+      ctx.restore();
     });
 
     if (isRunning) animationFrameId = requestAnimationFrame(renderAbstractCells);
