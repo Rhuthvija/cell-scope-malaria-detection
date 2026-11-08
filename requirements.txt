@@ -2,7 +2,8 @@
 # The bundled malaria_model.keras was saved with Keras 3.13, so it needs
 # TensorFlow 2.16+ with Keras 3 (TF 2.15 ships Keras 2 and cannot load it).
 # tensorflow-cpu skips GPU libraries: smaller install, less RAM on Render's free tier.
-tensorflow-cpu==2.19.0
+tensorflow-cpu==2.19.0; sys_platform != "darwin"
+tensorflow==2.19.0; sys_platform == "darwin"     # tensorflow-cpu has no macOS build
 keras==3.13.2
 flask>=3.0
 pillow>=10.0
