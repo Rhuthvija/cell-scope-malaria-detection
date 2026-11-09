@@ -57,48 +57,6 @@ function initGlossy3DCellularCanvas() {
     { x: 0.86, y: 0.68, r: 75, color1: '#f43f5e', color2: '#7c3aed', color3: '#ddd6fe', phase: 4.8 },
   ];
 
-  // Cursor attraction: every cell drifts toward the cursor, then floats back
-  // when it leaves. A small spring per cell keeps the motion fluid and
-  // slightly bouncy; smaller (lighter) cells travel further than big ones.
-  const drift = cells.map(() => ({ ox: 0, oy: 0, vx: 0, vy: 0 }));
-  const mouse = { x: 0, y: 0, active: false };
-  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  function setPointer(clientX, clientY) {
-    const rect = canvas.getBoundingClientRect();
-    mouse.x = clientX - rect.left;
-    mouse.y = clientY - rect.top;
-    mouse.active = true;
-  }
-  if (hero) {
-    hero.addEventListener('mousemove', (e) => setPointer(e.clientX, e.clientY));
-    hero.addEventListener('mouseleave', () => { mouse.active = false; });
-    hero.addEventListener('touchmove', (e) => {
-      if (e.touches[0]) setPointer(e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: true });
-    hero.addEventListener('touchend', () => { mouse.active = false; });
-  }
-
-  function updateDrift(i, x, y, r) {
-    const d = drift[i];
-    let tx = 0, ty = 0;
-    if (mouse.active && !reduceMotion) {
-      const dx = mouse.x - x;
-      const dy = mouse.y - y;
-      const dist = Math.hypot(dx, dy) || 1;
-      const lightness = 90 / r;                          // small cells ~1.3, big ~0.7
-      const pull = Math.min(1, 520 / (dist + 260)) * lightness;   // closer = stronger
-      const maxTravel = 70 * lightness;
-      tx = (dx / dist) * Math.min(dist * 0.35 * pull, maxTravel);
-      ty = (dy / dist) * Math.min(dist * 0.35 * pull, maxTravel);
-    }
-    // Damped spring toward the target offset.
-    d.vx = (d.vx + (tx - d.ox) * 0.035) * 0.86;
-    d.vy = (d.vy + (ty - d.oy) * 0.035) * 0.86;
-    d.ox += d.vx;
-    d.oy += d.vy;
-  }
-
   function resizeCanvas() {
     const bounds = hero ? hero.getBoundingClientRect() : canvas.getBoundingClientRect();
     width = Math.max(1, Math.round(bounds.width || window.innerWidth));
@@ -121,14 +79,11 @@ function initGlossy3DCellularCanvas() {
     ctx.fillStyle = bgGlow;
     ctx.fillRect(0, 0, width, height);
 
-    cells.forEach((c, i) => {
+    cells.forEach((c) => {
       // Positions are recalculated from immutable anchors on each frame rather
       // than incremented, so they can never wander or wrap off the viewport.
-      const ax = width * c.x + Math.sin(time + c.phase) * 8;
-      const ay = height * c.y + Math.cos(time * 0.8 + c.phase) * 6;
-      if (advance) updateDrift(i, ax, ay, c.r);
-      const x = ax + drift[i].ox;
-      const y = ay + drift[i].oy;
+      const x = width * c.x + Math.sin(time + c.phase) * 8;
+      const y = height * c.y + Math.cos(time * 0.8 + c.phase) * 6;
       const offsetR = c.r + Math.sin(time * 1.5 + c.phase) * 5;
 
       ctx.save();
